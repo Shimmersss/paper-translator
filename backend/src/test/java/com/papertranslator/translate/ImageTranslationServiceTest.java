@@ -109,4 +109,22 @@ class ImageTranslationServiceTest {
                 () -> service.translateImage(input, resultDir, "bounded-response.png", "auto", ignored -> {}));
         verify(llmService).completeWithImages(eq("vision-model"), anyString(), anyString(), anyList(), eq(12_000));
     }
+
+    @Test
+    void retriesOnceWhenTheVisionModelFindsNoText() throws Exception {
+        Path image = tempDir.resolve("poster.png");
+        ImageIO.write(new BufferedImage(40, 30, BufferedImage.TYPE_INT_RGB), "png", image.toFile());
+        LlmService llmService = mock(LlmService.class);
+        when(llmService.completeWithImages(any(), anyString(), anyString(), anyList(), anyInt()))
+                .thenReturn("{\"items\":[]}",
+                        "{\"items\":[{\"source\":\"Hello\",\"translation\":\"你好\",\"x\":0.1,\"y\":0.1,\"width\":0.3,\"height\":0.2}]}");
+        LlmConfig llmConfig = new LlmConfig();
+        llmConfig.setVisionModel("vision-model");
+        ImageTranslationService service = new ImageTranslationService(llmService, llmConfig);
+
+        service.translateImage(image, tempDir, "poster.png", "auto", ignored -> { });
+
+        verify(llmService, times(2)).completeWithImages(eq("vision-model"), anyString(), anyString(), anyList(), eq(12_000));
+        assertEquals("你好", Files.readString(tempDir.resolve("translated.txt")));
+    }
 }

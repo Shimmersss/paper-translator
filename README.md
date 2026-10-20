@@ -16,7 +16,7 @@ The interface is in Chinese.
 - **Complete or nothing.** Every paragraph's translation is checked. A truncated or empty answer is retried with a larger output budget, and a PDF with untranslated paragraphs is never delivered.
 - **Scanned pages.** Pages without a text layer go through Tesseract OCR first. Logos, covers and figures are kept, and the hidden text is sized from the actual glyphs so the translation is not tiny.
 - **References and appendices.** The bibliography is left in its original language, while appendices, supplementary material and acknowledgements that follow it are still translated.
-- **Image translation.** A vision model reads the text in a PNG/JPG/GIF/BMP, and the translation is drawn back over the image. You can download it as a translated-only or bilingual PNG or PDF.
+- **Image translation.** A vision model reads the text in a PNG/JPG/GIF/BMP, and the translation is drawn back over the image. Because the model's text boxes are only approximate, each one is snapped to the original strokes before covering. The cover follows the background color, including gradients and colored labels, so the original text does not show through. You can download it as a translated-only or bilingual PNG or PDF.
 - **Queue and progress.** One worker processes tasks in order, with live progress over Server-Sent Events. Recent tasks survive restarts and can be reopened from the history list.
 
 ## Requirements

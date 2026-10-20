@@ -123,7 +123,14 @@ public class ImageTranslationService {
                     prompt,
                     List.of(visionInput),
                     visionMaxTokens());
-            return parseItems(response);
+            List<TextItem> items = parseItems(response);
+            if (!items.isEmpty() || repair) return items;
+            // Vision models occasionally answer {"items":[]} for an image that
+            // clearly has text; one more identical request usually succeeds.
+            log.warn("视觉模型未返回任何文字块，重试一次: {}",
+                    response == null ? "" : response.substring(0, Math.min(200, response.length())));
+            return parseItems(llmService.completeWithImages(
+                    visionModel(), VISION_SYSTEM_PROMPT, prompt, List.of(visionInput), visionMaxTokens()));
         } catch (IOException | RuntimeException firstFailure) {
             if (repair || !isResponseFormatFailure(firstFailure)) throw firstFailure;
             log.warn("视觉模型首次响应不是完整 JSON，启动一次严格 JSON 修复请求: {}", firstFailure.getMessage());
@@ -180,6 +187,9 @@ public class ImageTranslationService {
     }
 
     private List<TextItem> parseItems(String response) throws IOException {
+        if (log.isDebugEnabled()) {
+            log.debug("视觉模型原始响应: {}", response == null ? "" : response.substring(0, Math.min(4000, response.length())));
+        }
         String json = response == null ? "" : response.trim();
         if (json.length() > MAX_VISION_RESPONSE_CHARS) {
             throw new IOException("视觉模型响应过长，已拒绝解析");
@@ -304,61 +314,83 @@ public class ImageTranslationService {
         graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         graphics.drawImage(source, 0, 0, null);
 
+        // Cover every box before drawing any text, so an overlapping neighbour
+        // never paints over a translation that was already drawn.
+        List<TextBoxRefiner.Placement> placements = new ArrayList<>();
         for (TextItem item : items) {
-            int x = (int) Math.round(item.x() * output.getWidth());
-            int y = (int) Math.round(item.y() * output.getHeight());
-            int width = Math.max(4, (int) Math.round(item.width() * output.getWidth()));
-            int height = Math.max(4, (int) Math.round(item.height() * output.getHeight()));
-            int padding = Math.max(2, Math.min(width, height) / 14);
-            int boxX = Math.max(0, x - padding);
-            int boxY = Math.max(0, y - padding);
-            int boxWidth = Math.min(output.getWidth() - boxX, width + padding * 2);
-            int boxHeight = Math.min(output.getHeight() - boxY, height + padding * 2);
-
+            int x = (int) Math.round(item.x() * source.getWidth());
+            int y = (int) Math.round(item.y() * source.getHeight());
+            int width = Math.max(4, (int) Math.round(item.width() * source.getWidth()));
+            int height = Math.max(4, (int) Math.round(item.height() * source.getHeight()));
+            TextBoxRefiner.Placement placement = TextBoxRefiner.refine(source, x, y, width, height);
+            if (log.isDebugEnabled()) {
+                log.debug("文字块: model=[{},{} {}x{}] cover={} background={} text={} source={}", x, y, width, height,
+                        placement.box(), placement.background(), placement.text(), item.source());
+            }
+            placements.add(placement);
             graphics.setComposite(AlphaComposite.SrcOver);
-            graphics.setColor(Color.WHITE);
-            graphics.fillRect(boxX, boxY, boxWidth, boxHeight);
+            placement.paintCover(graphics);
+        }
+
+        for (int index = 0; index < items.size(); index++) {
+            TextItem item = items.get(index);
+            TextBoxRefiner.Placement placement = placements.get(index);
+            int boxX = placement.box().x;
+            int boxY = placement.box().y;
+            int boxWidth = placement.box().width;
+            int boxHeight = placement.box().height;
+            int padding = Math.max(1, Math.min(boxWidth, boxHeight) / 20);
 
             int fontSize = fitFontSize(graphics, item.translation(), boxWidth - padding * 2,
                     boxHeight - padding * 2, bilingual ? 2 : 1);
             Font font = new Font(fontFamilyName(fontFamily), Font.PLAIN, fontSize);
             graphics.setFont(font);
-            graphics.setColor(Color.BLACK);
             int cursorY = boxY + padding + graphics.getFontMetrics().getAscent();
             if (bilingual && !item.source().isBlank()) {
                 Font sourceFont = font.deriveFont(Math.max(8f, fontSize * 0.62f));
                 graphics.setFont(sourceFont);
-                graphics.setColor(new Color(80, 80, 80));
+                graphics.setColor(mix(placement.text(), placement.background(), 0.65));
                 cursorY = drawWrapped(graphics, item.source(), boxX + padding, cursorY,
-                        boxWidth - padding * 2, boxY + boxHeight - padding, sourceFont);
+                        boxWidth - padding * 2, sourceFont);
                 cursorY += Math.max(2, fontSize / 8);
                 graphics.setFont(font);
-                graphics.setColor(Color.BLACK);
             }
+            graphics.setColor(placement.text());
             drawWrapped(graphics, item.translation(), boxX + padding, cursorY,
-                    boxWidth - padding * 2, boxY + boxHeight - padding, font);
+                    boxWidth - padding * 2, font);
         }
         graphics.dispose();
         return output;
     }
 
+    private static Color mix(Color foreground, Color background, double weight) {
+        return new Color(
+                (int) Math.round(foreground.getRed() * weight + background.getRed() * (1 - weight)),
+                (int) Math.round(foreground.getGreen() * weight + background.getGreen() * (1 - weight)),
+                (int) Math.round(foreground.getBlue() * weight + background.getBlue() * (1 - weight)));
+    }
+
+    /** Largest size whose wrapped lines fit the box; 8pt is the floor even if it overflows. */
     private int fitFontSize(Graphics2D graphics, String text, int width, int height, int rows) {
         int max = Math.max(10, Math.min(72, Math.round((float) height / rows * 0.82f)));
         for (int size = max; size >= 8; size--) {
             Font font = new Font("SansSerif", Font.PLAIN, size);
             FontMetrics metrics = graphics.getFontMetrics(font);
-            if (wrap(text, metrics, Math.max(1, width)).size() * metrics.getHeight() <= Math.max(1, height / rows + metrics.getHeight() / 2)) {
+            int lines = wrap(text, metrics, Math.max(1, width)).size();
+            int needed = lines * metrics.getHeight() - metrics.getLeading();
+            if (needed <= Math.max(1, height / rows)) {
                 return size;
             }
         }
         return 8;
     }
 
-    private int drawWrapped(Graphics2D graphics, String text, int x, int y, int width, int bottom, Font font) {
+    private int drawWrapped(Graphics2D graphics, String text, int x, int y, int width, Font font) {
         FontMetrics metrics = graphics.getFontMetrics(font);
         int cursorY = y;
         for (String line : wrap(text, metrics, Math.max(1, width))) {
-            if (cursorY > bottom) break;
+            // Never drop words: at the minimum size a line may run past the cover
+            // slightly, which is better than a silently truncated translation.
             graphics.drawString(line, x, cursorY);
             cursorY += metrics.getHeight();
         }
