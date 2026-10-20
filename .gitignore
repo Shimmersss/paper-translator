@@ -1,0 +1,9 @@
+.env
+.DS_Store
+
+backend/target/
+backend/data/
+backend/scripts/__pycache__/
+
+frontend/node_modules/
+frontend/dist/

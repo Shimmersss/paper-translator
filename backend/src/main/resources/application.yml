@@ -1,0 +1,64 @@
+server:
+  # Loopback by default: the app has no accounts, so anyone who can reach the
+  # port can spend your model quota. Put an authenticating reverse proxy in
+  # front before setting SERVER_ADDRESS=0.0.0.0.
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8080}
+
+spring:
+  config:
+    # KEY=VALUE lines from .env in the repo root (when started from backend/)
+    # or the current directory. Real environment variables take precedence.
+    import: optional:file:../.env[.properties],optional:file:./.env[.properties]
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  web:
+    resources:
+      # `npm run build` in frontend/ writes here; the backend then serves the UI.
+      static-locations: ${FRONTEND_DIST:file:../frontend/dist/},classpath:/static/
+
+babeldoc:
+  enabled: ${BABELDOC_ENABLED:true}
+  # Pinned BabelDOC runtime; uv downloads it on first use.
+  command: ${BABELDOC_COMMAND:uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python}
+  runner-script: ${BABELDOC_RUNNER_SCRIPT:scripts/babeldoc_runner.py}
+  # Any OpenAI-compatible chat completions endpoint.
+  openai-base-url: ${BABELDOC_OPENAI_BASE_URL:https://api.openai.com/v1}
+  openai-api-key: ${BABELDOC_OPENAI_API_KEY:}
+  openai-model: ${BABELDOC_OPENAI_MODEL:gpt-4o-mini}
+  timeout-seconds: ${BABELDOC_TIMEOUT_SECONDS:21600}
+  qps: ${BABELDOC_QPS:2}
+  # Memory guard (Linux only: reads cgroup and /proc/meminfo; no-op elsewhere).
+  # Defaults suit a 2 vCPU / 4 GB host. The watchdog stops BabelDOC and retries
+  # with lower concurrency before the host starts swapping heavily.
+  resource-cgroup-limit-mi-b: ${BABELDOC_RESOURCE_CGROUP_LIMIT_MIB:2850}
+  resource-min-available-mi-b: ${BABELDOC_RESOURCE_MIN_AVAILABLE_MIB:400}
+  resource-max-swap-used-mi-b: ${BABELDOC_RESOURCE_MAX_SWAP_USED_MIB:1200}
+  max-pages-per-chunk: ${BABELDOC_MAX_PAGES_PER_CHUNK:1}
+  resource-recovery-timeout-seconds: ${BABELDOC_RESOURCE_RECOVERY_TIMEOUT_SECONDS:120}
+
+llm:
+  # Vision model for image translation. OpenAI-compatible or Anthropic Messages.
+  api-url: ${LLM_API_URL:https://api.openai.com/v1}
+  api-key: ${LLM_API_KEY:}
+  model: ${LLM_MODEL:gpt-4o-mini}
+  # Optional: a different model just for images; falls back to LLM_MODEL.
+  vision-model: ${LLM_VISION_MODEL:}
+  # auto | openai | claude. auto picks claude when the URL contains "anthropic".
+  protocol: ${LLM_PROTOCOL:auto}
+  connect-timeout-seconds: ${LLM_CONNECT_TIMEOUT_SECONDS:20}
+  read-timeout-seconds: ${LLM_READ_TIMEOUT_SECONDS:180}
+  vision-image-max-bytes: ${LLM_VISION_IMAGE_MAX_BYTES:4194304}
+  vision-batch-max-bytes: ${LLM_VISION_BATCH_MAX_BYTES:16777216}
+  vision-image-max-pixels: ${LLM_VISION_IMAGE_MAX_PIXELS:4000000}
+  vision-max-tokens: ${LLM_VISION_MAX_TOKENS:12000}
+
+translation:
+  # One worker processes tasks in order; finished tasks beyond max-history are deleted.
+  storage-dir: ${TRANSLATION_STORAGE_DIR:./data/translation-tasks}
+  max-history: ${TRANSLATION_MAX_HISTORY:20}
+  queue-capacity: ${TRANSLATION_QUEUE_CAPACITY:5}
+  max-qps: ${TRANSLATION_MAX_QPS:4}
+  stable-qps: ${TRANSLATION_STABLE_QPS:2}
