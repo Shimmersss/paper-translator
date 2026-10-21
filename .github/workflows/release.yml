@@ -53,7 +53,7 @@ jobs:
 
       - name: Python tests
         working-directory: backend/scripts
-        run: uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_translation_completion test_pdf_ocr
+        run: uv run --python 3.12 --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_translation_completion test_pdf_ocr
 
       - name: CLI tests
         working-directory: cli

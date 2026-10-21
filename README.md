@@ -139,7 +139,7 @@ cd backend && mvn test
 ```
 
 ```bash
-cd backend/scripts && uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_pdf_ocr test_translation_completion
+cd backend/scripts && uv run --python 3.12 --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_pdf_ocr test_translation_completion
 ```
 
 ```bash
@@ -171,7 +171,7 @@ Environment variables (or `KEY=VALUE` lines in `.env`) set the defaults; anythin
 | `SETTINGS_FILE` | — | Explicit path for `settings.json` |
 | `TRANSLATION_MAX_HISTORY` | `20` | Finished tasks to keep; older ones are deleted |
 | `TRANSLATION_MAX_QPS` / `TRANSLATION_STABLE_QPS` / `BABELDOC_MAX_PAGES_PER_CHUNK` / `BABELDOC_RESOURCE_*` | — | Pin performance without the settings page (tuned for a 4 GB host). Setting any of them turns tiers off until one is chosen on the page |
-| `BABELDOC_COMMAND` | `uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | How the Python runner is started; quote paths that contain spaces |
+| `BABELDOC_COMMAND` | `uv run --python 3.12 --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | How the Python runner is started; quote paths that contain spaces |
 
 ## Security
 

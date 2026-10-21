@@ -137,7 +137,7 @@ cd backend && mvn test
 ```
 
 ```bash
-cd backend/scripts && uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_pdf_ocr test_translation_completion
+cd backend/scripts && uv run --python 3.12 --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_pdf_ocr test_translation_completion
 ```
 
 ```bash
@@ -169,7 +169,7 @@ OCR 测试会调用真实的 Tesseract，需要先安装 `tesseract` 和 `eng` �
 | `SETTINGS_FILE` | — | 单独指定 `settings.json` 的路径 |
 | `TRANSLATION_MAX_HISTORY` | `20` | 保留的已结束任务数，超出后删除最旧的 |
 | `TRANSLATION_MAX_QPS` / `TRANSLATION_STABLE_QPS` / `BABELDOC_MAX_PAGES_PER_CHUNK` / `BABELDOC_RESOURCE_*` | — | 不用设置页、直接固定性能参数（按 4 GB 服务器调校）。只要设置了其中任一项，在设置页选择档位之前不启用档位 |
-| `BABELDOC_COMMAND` | `uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | 启动 Python 翻译脚本的命令；路径含空格时请加引号 |
+| `BABELDOC_COMMAND` | `uv run --python 3.12 --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | 启动 Python 翻译脚本的命令；路径含空格时请加引号 |
 
 ## 安全
 

@@ -8,7 +8,7 @@ import org.springframework.context.annotation.Configuration;
 public class BabelDocConfig {
 
     private boolean enabled = true;
-    private String command = "uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python";
+    private String command = "uv run --python 3.12 --with babeldoc==0.6.2 --with bitstring==4.4.0 python";
     private String runnerScript = "scripts/babeldoc_runner.py";
     private String openaiBaseUrl = "https://api.openai.com/v1";
     private String openaiApiKey = "";

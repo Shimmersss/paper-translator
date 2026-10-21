@@ -1,0 +1,6 @@
+# The packaged tokenizer vocabulary is verified by SHA-256; git must never
+# rewrite its line endings (core.autocrlf on Windows would break the hash).
+backend/scripts/tiktoken-cache/** binary
+
+# Shell scripts must keep LF to run on macOS and Linux, even from a Windows checkout.
+*.sh text eol=lf

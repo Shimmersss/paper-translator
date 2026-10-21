@@ -59,7 +59,7 @@ jobs:
           tests="test_babeldoc_runner test_translation_completion"
           # The OCR tests run real Tesseract; Windows runners do not ship it.
           if [ "$RUNNER_OS" != "Windows" ]; then tests="$tests test_pdf_ocr"; fi
-          uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest $tests
+          uv run --python 3.12 --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest $tests
 
       - name: CLI tests
         working-directory: cli

@@ -19,7 +19,8 @@ from .archive import download, extract_archive
 
 JAVA_FEATURE = 21
 MIN_JAVA = 17
-BABELDOC_WITH = ["--with", "babeldoc==0.6.2", "--with", "bitstring==4.4.0"]
+# Pinned interpreter: BabelDOC needs onnxruntime, which lags new Python releases.
+BABELDOC_WITH = ["--python", "3.12", "--with", "babeldoc==0.6.2", "--with", "bitstring==4.4.0"]
 
 
 def os_name() -> str:
