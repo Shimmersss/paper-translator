@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import posixpath
 import shutil
 import tarfile
 import tempfile
@@ -68,15 +69,20 @@ def extract_archive(archive: Path, target: Path, strip_top_level: bool = False) 
                 for member in bundle.getmembers():
                     _safe_member(member.name)
                     if member.issym() or member.islnk():
-                        link = PurePosixPath(member.name).parent / member.linkname
-                        if member.linkname.startswith("/") or ".." in PurePosixPath(os.path.normpath(str(link))).parts:
+                        # Archive paths are POSIX on every platform; os.path would use '\\' on Windows.
+                        target = member.linkname.replace("\\", "/")
+                        link = posixpath.normpath(posixpath.join(posixpath.dirname(member.name), target))
+                        if target.startswith("/") or ":" in target.split("/")[0] or link == ".." or link.startswith("../"):
                             raise RuntimeError(f"压缩包包含越界链接: {member.name}")
                     if member.isdev():
                         raise RuntimeError(f"压缩包包含设备文件: {member.name}")
-                if hasattr(tarfile, "data_filter"):
-                    bundle.extractall(staging, filter="data")
-                else:
-                    bundle.extractall(staging)
+                try:
+                    if hasattr(tarfile, "data_filter"):
+                        bundle.extractall(staging, filter="data")
+                    else:
+                        bundle.extractall(staging)
+                except tarfile.TarError as error:
+                    raise RuntimeError(f"压缩包内容不安全或已损坏: {error}") from error
         source = staging
         if strip_top_level:
             entries = [entry for entry in staging.iterdir() if not entry.name.startswith(".")]

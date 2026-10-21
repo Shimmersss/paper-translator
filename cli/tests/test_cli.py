@@ -66,6 +66,15 @@ class ArchiveTest(unittest.TestCase):
                 bundle.addfile(info)
             with self.assertRaises(RuntimeError):
                 archive.extract_archive(bad_tar, Path(tmp) / "out")
+            for linkname in ("..\\..\\escape", "C:/Windows/x", "/etc/passwd"):
+                windows_tar = Path(tmp) / "bad2.tar.gz"
+                with tarfile.open(windows_tar, "w:gz") as bundle:
+                    info = tarfile.TarInfo("app/link")
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = linkname
+                    bundle.addfile(info)
+                with self.assertRaises(RuntimeError, msg=linkname):
+                    archive.extract_archive(windows_tar, Path(tmp) / "out")
             self.assertFalse((Path(tmp) / "escape.txt").exists())
 
     def test_packages_a_release_and_installs_it_from_the_archive(self):
