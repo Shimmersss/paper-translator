@@ -17,7 +17,76 @@
 - **图片翻译**：视觉模型识别 PNG/JPG/GIF/BMP 中的文字，再把译文绘回图片。模型给出的文字框只是近似位置，覆盖前会先对齐到原文笔画；遮盖颜色跟随背景（含渐变和彩色标签），原文不会露出。可下载纯中文或双语的 PNG / PDF。
 - **队列与进度**：单 worker 依次处理，通过 SSE 实时推送进度。最近的任务在重启后保留，可从历史列表重新打开。
 
-## 环境要求
+## 安装
+
+### 一条命令安装（macOS、Linux、Windows）
+
+macOS / Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.sh | sh
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.ps1 | iex
+```
+
+安装脚本会装好 [uv](https://docs.astral.sh/uv/)，从最新的 GitHub Release 安装 `paper-translator` 命令，然后运行 `paper-translator setup`。setup 会：
+
+- 下载发布包，并用 `SHA256SUMS.txt` 校验；
+- 使用已有的 JDK 17+，没有时安装 JDK 21（macOS 用 Homebrew，Windows 用 winget，Linux 在可用 sudo 时用 apt/dnf，否则把便携版 Temurin 下载到安装目录，不需要管理员权限）；
+- 询问是否安装 Tesseract（扫描版 PDF 需要）；
+- 询问模型接口（可以跳过，之后在设置页填写）；
+- 提前下载 BabelDOC 和版面模型，首次翻译不用再等。
+
+不需要 Node.js 和 Maven。所有文件放在 `~/.paper-translator`（Windows 为 `%LOCALAPPDATA%\paper-translator`），可用 `PAPER_TRANSLATOR_HOME` 改到别处。
+
+```bash
+paper-translator start
+```
+
+服务在后台启动，并自动打开 <http://127.0.0.1:8080>。
+
+### 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `paper-translator setup` | 安装依赖、配置并预下载模型。`--from-source` 改为构建源码目录；`--archive 文件` 离线安装 |
+| `paper-translator start` / `stop` / `status` | 后台启动、停止、查看状态（`start --port 9000`、`--no-browser`） |
+| `paper-translator update` | 安装最新版本，保留 `.env`、`settings.json` 和数据 |
+| `paper-translator doctor` | 逐项检查 JDK、uv、Tesseract、端口和模型连接，并给出修复命令 |
+| `paper-translator logs` | 查看后端日志（`-f` 持续跟踪） |
+| `paper-translator autostart enable` / `disable` | 登录后自动启动（launchd、计划任务或 systemd 用户服务） |
+| `paper-translator uninstall` | 删除程序，并询问是否保留数据和配置 |
+
+另需一个兼容 OpenAI 接口的对话模型 API Key（OpenAI、DeepSeek、通义千问、本地 vLLM/Ollama 等）。图片翻译需要支持图像输入的模型，可以是 OpenAI 兼容接口或 Anthropic。
+
+## 设置页
+
+点页面右上角的“设置”：
+
+- **模型**：PDF 翻译和图片翻译各自的接口地址、API Key 和模型名，都带“测试连接”。Key 只写不读：页面只显示末 4 位，输入框留空表示不修改。
+- **性能**：自动、最高性能或手动。推荐值按检测到的核数和内存计算：
+
+  | 内存 | 自动：每批页数 / 并发 | 最高性能：每批页数 / 并发 |
+  | --- | --- | --- |
+  | < 6 GB | 1 / 2 | 1 / 4 |
+  | 6–12 GB | 3 / 4 | 5 / 6 |
+  | 12–24 GB | 5 / 6 | 10 / 8 |
+  | ≥ 24 GB | 10 / 8 | 20 / 12 |
+
+  并发不超过核数的两倍。BabelDOC 始终只运行一个进程，内存保护和自动降级在所有档位都保留。“服务商并发上限”用于限流严格的服务商；遇到 HTTP 429 时，进度文字里会出现提示。
+- **存储**：保留多少个已结束的任务。
+
+修改后对下一个任务生效，不需要重启。设置保存在任务目录旁的 `settings.json`（仅本人可读写），优先于 `.env`，`.env` 又优先于内置默认值。只在 `.env` 里设置性能参数的老用户，在设置页选择档位之前行为不变。
+
+设置页只接受来自运行服务的这台电脑的修改；服务监听 `127.0.0.1` 以外的地址时，设置页变为只读。
+
+## 手动安装
+
+用于开发，或不想使用安装脚本时。
 
 | 工具 | 版本 | 说明 |
 | --- | --- | --- |
@@ -27,17 +96,13 @@
 | [uv](https://docs.astral.sh/uv/) | 较新版本 | 运行锁定版本的 BabelDOC，并自动获取合适的 Python |
 | Tesseract + `eng` 数据 | 4.1+ | 可选，仅用于没有文字层的 PDF 页面。`brew install tesseract` / `apt-get install tesseract-ocr tesseract-ocr-eng` |
 
-另需一个兼容 OpenAI 接口的对话模型 API Key（OpenAI、DeepSeek、通义千问、本地 vLLM/Ollama 等）。图片翻译需要支持图像输入的模型，可以是 OpenAI 兼容接口或 Anthropic。
-
-第一次翻译 PDF 时会下载 BabelDOC、它的 Python 依赖和版面模型，需要几分钟；之后的任务会直接开始。
-
-## 快速开始
+`paper-translator setup --from-source` 会检查这些依赖并替你构建源码目录。也可以手动操作：
 
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env`，至少填写 `BABELDOC_OPENAI_API_KEY`；如果不用 OpenAI，再改 `BABELDOC_OPENAI_BASE_URL` 和 `BABELDOC_OPENAI_MODEL`。需要图片翻译时同时填写 `LLM_API_KEY`。
+编辑 `.env`（也可以不填，改用设置页）。
 
 ```bash
 cd frontend && npm ci && npm run build
@@ -52,6 +117,8 @@ cd backend && java -jar target/paper-translator.jar
 ```
 
 打开 <http://127.0.0.1:8080>。请在 `backend/` 目录下启动后端：`../.env`、`scripts/` 和 `../frontend/dist/` 都按这个目录解析。
+
+第一次翻译 PDF 时会下载 BabelDOC、它的 Python 依赖和版面模型，需要几分钟（setup 已预下载时除外）。
 
 ### 开发
 
@@ -73,11 +140,21 @@ cd backend && mvn test
 cd backend/scripts && uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_pdf_ocr test_translation_completion
 ```
 
-OCR 测试会调用真实的 Tesseract，需要先安装 `tesseract` 和 `eng` 识别数据。
+```bash
+cd cli && uv run --no-project python -m unittest discover -s tests
+```
+
+OCR 测试会调用真实的 Tesseract，需要先安装 `tesseract` 和 `eng` 识别数据。每次推送和 PR，GitHub Actions 都会在 Ubuntu、macOS 和 Windows 上运行以上测试，并对 CLI 做一次安装、启动、停止的冒烟测试。
+
+### 发布新版本
+
+1. 在 `backend/pom.xml`、`frontend/package.json`、`cli/pyproject.toml` 和 `cli/paper_translator_cli/__init__.py` 中设置相同的版本号。
+2. 打标签并推送：`git tag v0.2.0 && git push origin v0.2.0`。
+3. 发布工作流会核对版本号、运行测试，并发布 `paper-translator-<版本>.tar.gz`、`.zip`、CLI wheel 和 `SHA256SUMS.txt`。安装脚本和 `paper-translator update` 从这里获取新版本。
 
 ## 配置
 
-所有配置都是环境变量，也可以写成 `.env` 里的 `KEY=VALUE`。完整列表和默认值见 [`application.yml`](backend/src/main/resources/application.yml)。
+环境变量（或 `.env` 里的 `KEY=VALUE`）提供默认值，设置页保存的值会覆盖它们。完整列表见 [`application.yml`](backend/src/main/resources/application.yml)。
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -88,12 +165,11 @@ OCR 测试会调用真实的 Tesseract，需要先安装 `tesseract` 和 `eng` �
 | `LLM_VISION_MODEL` | — | 可选，单独指定图片翻译模型 |
 | `LLM_PROTOCOL` | `auto` | `openai`、`claude` 或 `auto`（地址含 `anthropic` 时按 Anthropic 处理） |
 | `SERVER_ADDRESS` / `SERVER_PORT` | `127.0.0.1` / `8080` | 监听地址 |
-| `TRANSLATION_STORAGE_DIR` | `./data/translation-tasks` | 上传文件、结果和任务状态 |
+| `TRANSLATION_STORAGE_DIR` | `./data/translation-tasks` | 上传文件、结果和任务状态；`settings.json` 放在它旁边 |
+| `SETTINGS_FILE` | — | 单独指定 `settings.json` 的路径 |
 | `TRANSLATION_MAX_HISTORY` | `20` | 保留的已结束任务数，超出后删除最旧的 |
-| `TRANSLATION_MAX_QPS` / `TRANSLATION_STABLE_QPS` | `4` / `2` | 加速模式 / 稳定模式的模型并发数 |
-| `BABELDOC_MAX_PAGES_PER_CHUNK` | `1` | 每次 BabelDOC 运行的页数，越大越快、越占内存 |
-| `BABELDOC_RESOURCE_*` | 按 4 GB 调校 | 内存保护阈值（仅 Linux） |
-| `BABELDOC_COMMAND` | `uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | 启动 Python 翻译脚本的命令 |
+| `TRANSLATION_MAX_QPS` / `TRANSLATION_STABLE_QPS` / `BABELDOC_MAX_PAGES_PER_CHUNK` / `BABELDOC_RESOURCE_*` | — | 不用设置页、直接固定性能参数（按 4 GB 服务器调校）。只要设置了其中任一项，在设置页选择档位之前不启用档位 |
+| `BABELDOC_COMMAND` | `uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | 启动 Python 翻译脚本的命令；路径含空格时请加引号 |
 
 ## 安全
 
@@ -116,7 +192,9 @@ OCR 测试会调用真实的 Tesseract，需要先安装 `tesseract` 和 `eng` �
 
 - [`backend/src/main/java/com/papertranslator/translate/`](backend/src/main/java/com/papertranslator/translate/)：HTTP 接口、队列、分片续跑、内存保护和图片翻译。
 - [`backend/scripts/`](backend/scripts/)：BabelDOC 启动脚本及补丁。
-- [`frontend/src/components/TranslateWorkbench.vue`](frontend/src/components/TranslateWorkbench.vue)：全部界面。
+- [`backend/src/main/java/com/papertranslator/settings/`](backend/src/main/java/com/papertranslator/settings/)：合并设置页、`.env` 与默认值，计算性能档位。
+- [`frontend/src/components/`](frontend/src/components/)：界面，包括翻译页和设置抽屉。
+- [`cli/`](cli/)：`paper-translator` 命令；[`install.sh`](install.sh) 与 [`install.ps1`](install.ps1) 负责引导安装。
 
 ## 许可
 

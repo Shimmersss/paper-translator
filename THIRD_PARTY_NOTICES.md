@@ -14,6 +14,14 @@ own license.
 | [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) + `eng` data | 4.1.1+ | Apache-2.0 | OCR for pages without a text layer (optional) |
 | [uv](https://github.com/astral-sh/uv) | — | MIT / Apache-2.0 | Provisions the pinned Python environment |
 
+## Installed by the `paper-translator` CLI when missing
+
+| Project | License | Notes |
+| --- | --- | --- |
+| [Eclipse Temurin](https://adoptium.net/) JDK 21 | GPL-2.0 with Classpath Exception | Via Homebrew / winget / apt / dnf, or downloaded from the Adoptium API and checked against its SHA-256 |
+| [uv](https://github.com/astral-sh/uv) | MIT / Apache-2.0 | Installed by `install.sh` / `install.ps1` from astral.sh |
+| [Hatchling](https://github.com/pypa/hatch) | MIT | Build backend for the CLI package (build time only) |
+
 ## Bundled data
 
 | Item | Location | License | Notes |
@@ -41,5 +49,10 @@ own license.
 ## External services
 
 Translation text and images are sent to the model endpoints you configure
-(`BABELDOC_OPENAI_BASE_URL`, `LLM_API_URL`). Their terms of service and data
-policies apply; nothing is sent anywhere else.
+(on the settings page or as `BABELDOC_OPENAI_BASE_URL`, `LLM_API_URL`). Their
+terms of service and data policies apply; documents are sent nowhere else.
+
+The installer and CLI download software from GitHub (releases of this
+repository), astral.sh (uv), api.adoptium.net (a JDK, only when none is
+installed) and, on first use, the Python package index and BabelDOC's model
+hosts. No usage data is collected.

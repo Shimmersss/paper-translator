@@ -523,11 +523,35 @@ public class BabelDocService {
         return active;
     }
 
-    private List<String> splitCommand(String command) {
+    /** Splits on whitespace; "double" or 'single' quotes keep paths with spaces together. */
+    static List<String> splitCommand(String command) {
         if (command == null || command.isBlank()) {
             throw new IllegalStateException("BABELDOC_COMMAND 未配置");
         }
-        return Stream.of(command.trim().split("\\s+")).toList();
+        List<String> parts = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        boolean inToken = false;
+        for (char c : command.trim().toCharArray()) {
+            if (quote != 0) {
+                if (c == quote) quote = 0; else current.append(c);
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+                inToken = true;
+            } else if (Character.isWhitespace(c)) {
+                if (inToken) {
+                    parts.add(current.toString());
+                    current.setLength(0);
+                    inToken = false;
+                }
+            } else {
+                current.append(c);
+                inToken = true;
+            }
+        }
+        if (quote != 0) throw new IllegalStateException("BABELDOC_COMMAND 引号未闭合");
+        if (inToken) parts.add(current.toString());
+        return parts;
     }
 
     private String sanitizeFileName(String fileName) {

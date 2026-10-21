@@ -301,6 +301,15 @@ class BabelDocServiceTest {
     }
 
     @Test
+    void keepsQuotedPathsWithSpacesInTheCommand() {
+        assertEquals(List.of("C:\\Users\\Jane Doe\\.local\\bin\\uv.exe", "run", "--with", "babeldoc==0.6.2", "python"),
+                BabelDocService.splitCommand("\"C:\\Users\\Jane Doe\\.local\\bin\\uv.exe\" run --with babeldoc==0.6.2 python"));
+        assertEquals(List.of("uv", "run", "--with", "babeldoc==0.6.2", "python"),
+                BabelDocService.splitCommand("  uv   run --with babeldoc==0.6.2\tpython "));
+        assertThrows(IllegalStateException.class, () -> BabelDocService.splitCommand("\"uv run"));
+    }
+
+    @Test
     void reportsProviderRateLimitsWithoutMovingTheProgressBar() {
         BabelDocService service = new BabelDocService(new BabelDocConfig(), mock(ProviderSettings.class));
         List<BabelDocService.ProgressUpdate> updates = new ArrayList<>();

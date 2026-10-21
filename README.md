@@ -19,7 +19,76 @@ The interface is in Chinese.
 - **Image translation.** A vision model reads the text in a PNG/JPG/GIF/BMP, and the translation is drawn back over the image. Because the model's text boxes are only approximate, each one is snapped to the original strokes before covering. The cover follows the background color, including gradients and colored labels, so the original text does not show through. You can download it as a translated-only or bilingual PNG or PDF.
 - **Queue and progress.** One worker processes tasks in order, with live progress over Server-Sent Events. Recent tasks survive restarts and can be reopened from the history list.
 
-## Requirements
+## Install
+
+### One command (macOS, Linux, Windows)
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.ps1 | iex
+```
+
+The installer sets up [uv](https://docs.astral.sh/uv/), installs the `paper-translator` command from the latest GitHub release and runs `paper-translator setup`. Setup then:
+
+- downloads the release archive and checks it against `SHA256SUMS.txt`;
+- uses an existing JDK 17+, or installs JDK 21 (Homebrew on macOS, winget on Windows, apt/dnf on Linux when sudo is available, otherwise a portable Temurin JDK in the install folder — no administrator rights needed);
+- offers to install Tesseract for scanned PDFs;
+- asks for your model API (you can skip this and fill it in on the settings page later);
+- downloads BabelDOC and its layout model in advance, so the first translation does not wait.
+
+Node.js and Maven are not needed. Everything goes into `~/.paper-translator` (Windows: `%LOCALAPPDATA%\paper-translator`); set `PAPER_TRANSLATOR_HOME` to use another folder.
+
+```bash
+paper-translator start
+```
+
+This starts the service in the background and opens <http://127.0.0.1:8080>.
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `paper-translator setup` | Install dependencies, configure, download models. `--from-source` builds a source checkout instead; `--archive FILE` installs an offline archive |
+| `paper-translator start` / `stop` / `status` | Run in the background, stop, show state (`start --port 9000`, `--no-browser`) |
+| `paper-translator update` | Install the latest release; `.env`, `settings.json` and your data are kept |
+| `paper-translator doctor` | Check JDK, uv, Tesseract, the port and model connectivity, with fix commands |
+| `paper-translator logs` | Show the backend log (`-f` to follow) |
+| `paper-translator autostart enable` / `disable` | Start at login (launchd, Task Scheduler, or a systemd user service) |
+| `paper-translator uninstall` | Remove the program; asks whether to keep data and configuration |
+
+You need an API key for an OpenAI-compatible chat model (OpenAI, DeepSeek, Qwen, a local vLLM/Ollama server, …). Image translation needs a vision-capable model, either OpenAI-compatible or Anthropic.
+
+## Settings
+
+Click **设置** (Settings) in the top-right corner of the page:
+
+- **Models**: endpoint, API key and model for PDF translation and for image translation, each with a connection test. Keys are write-only: the page shows only the last four characters, and leaving the field empty keeps the saved key.
+- **Performance**: *auto*, *max* or *manual*. Values are recommended from the detected cores and memory:
+
+  | Memory | Auto: pages per batch / concurrency | Max: pages per batch / concurrency |
+  | --- | --- | --- |
+  | < 6 GB | 1 / 2 | 1 / 4 |
+  | 6–12 GB | 3 / 4 | 5 / 6 |
+  | 12–24 GB | 5 / 6 | 10 / 8 |
+  | ≥ 24 GB | 10 / 8 | 20 / 12 |
+
+  Concurrency never exceeds twice the core count. BabelDOC still runs as a single process, and the memory guard with automatic downgrade stays on at every tier. A *provider concurrency cap* limits requests for providers that rate-limit; HTTP 429 back-off shows up in the progress text.
+- **Storage**: how many finished tasks to keep.
+
+Changes apply to the next task without a restart. They are saved to `settings.json` next to the task folder (owner-only permissions) and take precedence over `.env`, which takes precedence over built-in defaults. If you only use `.env` for performance settings, they keep working until you pick a tier on the page.
+
+The page only accepts changes from the machine the service runs on, and becomes read-only when the server listens beyond `127.0.0.1`.
+
+## Manual installation
+
+For development, or to run without the installer.
 
 | Tool | Version | Notes |
 | --- | --- | --- |
@@ -29,17 +98,13 @@ The interface is in Chinese.
 | [uv](https://docs.astral.sh/uv/) | recent | Runs the pinned BabelDOC and fetches a suitable Python automatically. |
 | Tesseract + `eng` data | 4.1+ | Optional; only for PDFs whose pages have no text layer. `brew install tesseract` / `apt-get install tesseract-ocr tesseract-ocr-eng` |
 
-You also need an API key for an OpenAI-compatible chat model (OpenAI, DeepSeek, Qwen, a local vLLM/Ollama server, …). Image translation needs a vision-capable model, either OpenAI-compatible or Anthropic.
-
-The first PDF job downloads BabelDOC, its Python dependencies and its layout model, which takes a few minutes. Later jobs start immediately.
-
-## Getting started
+`paper-translator setup --from-source` checks these and builds a checkout for you. To do it by hand:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set at least `BABELDOC_OPENAI_API_KEY`, plus `BABELDOC_OPENAI_BASE_URL` and `BABELDOC_OPENAI_MODEL` if you are not using OpenAI. Set `LLM_API_KEY` too if you want image translation.
+Edit `.env` (or leave it and use the settings page).
 
 ```bash
 cd frontend && npm ci && npm run build
@@ -54,6 +119,8 @@ cd backend && java -jar target/paper-translator.jar
 ```
 
 Open <http://127.0.0.1:8080>. Start the backend from inside `backend/`: it resolves `../.env`, `scripts/` and `../frontend/dist/` relative to that directory.
+
+The first PDF job downloads BabelDOC, its Python dependencies and its layout model, which takes a few minutes unless setup already did it.
 
 ### Development
 
@@ -75,11 +142,21 @@ cd backend && mvn test
 cd backend/scripts && uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python -m unittest test_babeldoc_runner test_pdf_ocr test_translation_completion
 ```
 
-The OCR tests run real Tesseract, so they need `tesseract` and its `eng` data installed.
+```bash
+cd cli && uv run --no-project python -m unittest discover -s tests
+```
+
+The OCR tests run real Tesseract, so they need `tesseract` and its `eng` data installed. GitHub Actions runs all of these on Ubuntu, macOS and Windows for every push and pull request, plus an install-start-stop smoke test of the CLI.
+
+### Releasing
+
+1. Set the same version in `backend/pom.xml`, `frontend/package.json`, `cli/pyproject.toml` and `cli/paper_translator_cli/__init__.py`.
+2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+3. The release workflow checks the versions, runs the tests and publishes `paper-translator-<version>.tar.gz`, `.zip`, the CLI wheel and `SHA256SUMS.txt`. The installer and `paper-translator update` pick it up from there.
 
 ## Configuration
 
-All settings are environment variables (or `KEY=VALUE` lines in `.env`). The full list with defaults is in [`application.yml`](backend/src/main/resources/application.yml).
+Environment variables (or `KEY=VALUE` lines in `.env`) set the defaults; anything saved on the settings page overrides them. The full list is in [`application.yml`](backend/src/main/resources/application.yml).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -90,12 +167,11 @@ All settings are environment variables (or `KEY=VALUE` lines in `.env`). The ful
 | `LLM_VISION_MODEL` | — | Optional separate model for images |
 | `LLM_PROTOCOL` | `auto` | `openai`, `claude`, or `auto` (Anthropic when the URL contains `anthropic`) |
 | `SERVER_ADDRESS` / `SERVER_PORT` | `127.0.0.1` / `8080` | Listen address |
-| `TRANSLATION_STORAGE_DIR` | `./data/translation-tasks` | Uploaded files, results and task state |
+| `TRANSLATION_STORAGE_DIR` | `./data/translation-tasks` | Uploaded files, results and task state; `settings.json` sits next to it |
+| `SETTINGS_FILE` | — | Explicit path for `settings.json` |
 | `TRANSLATION_MAX_HISTORY` | `20` | Finished tasks to keep; older ones are deleted |
-| `TRANSLATION_MAX_QPS` / `TRANSLATION_STABLE_QPS` | `4` / `2` | Concurrent model requests in fast and stable mode |
-| `BABELDOC_MAX_PAGES_PER_CHUNK` | `1` | Pages per BabelDOC run. Larger chunks are faster but use more memory. |
-| `BABELDOC_RESOURCE_*` | tuned for 4 GB | Memory guard thresholds (Linux only) |
-| `BABELDOC_COMMAND` | `uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | How the Python runner is started |
+| `TRANSLATION_MAX_QPS` / `TRANSLATION_STABLE_QPS` / `BABELDOC_MAX_PAGES_PER_CHUNK` / `BABELDOC_RESOURCE_*` | — | Pin performance without the settings page (tuned for a 4 GB host). Setting any of them turns tiers off until one is chosen on the page |
+| `BABELDOC_COMMAND` | `uv run --with babeldoc==0.6.2 --with bitstring==4.4.0 python` | How the Python runner is started; quote paths that contain spaces |
 
 ## Security
 
@@ -118,7 +194,9 @@ browser ──/api/translate──▶ Spring Boot ──▶ task queue (1 worker
 
 - [`backend/src/main/java/com/papertranslator/translate/`](backend/src/main/java/com/papertranslator/translate/) holds the HTTP API, queue, chunking and resume logic, memory guard and image translation.
 - [`backend/scripts/`](backend/scripts/) holds the BabelDOC runner and its patches.
-- [`frontend/src/components/TranslateWorkbench.vue`](frontend/src/components/TranslateWorkbench.vue) is the whole UI.
+- [`backend/src/main/java/com/papertranslator/settings/`](backend/src/main/java/com/papertranslator/settings/) merges the settings page, `.env` and defaults, and computes the performance tiers.
+- [`frontend/src/components/`](frontend/src/components/) holds the UI: the translate page and the settings drawer.
+- [`cli/`](cli/) is the `paper-translator` command; [`install.sh`](install.sh) and [`install.ps1`](install.ps1) bootstrap it.
 
 ## License
 

@@ -14,6 +14,14 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Keep the UI library in its own long-cached chunk.
+        manualChunks: { 'naive-ui': ['naive-ui'] }
+      }
+    }
+  },
   server: {
     port: 5173,
     proxy: {
