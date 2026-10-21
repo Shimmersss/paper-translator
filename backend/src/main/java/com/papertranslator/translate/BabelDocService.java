@@ -1,6 +1,8 @@
 package com.papertranslator.translate;
 
 import com.papertranslator.config.BabelDocConfig;
+import com.papertranslator.config.TranslationConfig;
+import com.papertranslator.settings.Tuning;
 import com.papertranslator.config.ProviderSettings;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,6 +13,7 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -66,11 +69,20 @@ public class BabelDocService {
 
     private final BabelDocConfig config;
     private final ProviderSettings providers;
+    private final Tuning tuning;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private volatile double lastProgress;
 
+    /** Uses application.yml / environment values only (tests and embedding). */
     public BabelDocService(BabelDocConfig config, ProviderSettings providers) {
+        this(config, providers, Tuning.fromConfig(config, new TranslationConfig()));
+    }
+
+    @Autowired
+    public BabelDocService(BabelDocConfig config, ProviderSettings providers, Tuning tuning) {
         this.config = config;
         this.providers = providers;
+        this.tuning = tuning;
     }
 
     /** Checked before a task is queued so a missing key is reported instead of a generic failure. */
@@ -86,7 +98,7 @@ public class BabelDocService {
     public TranslationResult translatePdf(Path inputPdf, Path resultDir, String fileName, int startPage, int endPage,
                                           String fontFamily, int qps, Consumer<ProgressUpdate> progressConsumer) {
         return translatePdf(inputPdf, resultDir, fileName, startPage, endPage, fontFamily, qps,
-                config.getMaxPagesPerChunk(), progressConsumer);
+                tuning.pagesPerChunk(), progressConsumer);
     }
 
     /** Stable mode may lower the page batch size without mutating global runtime configuration. */
@@ -111,7 +123,7 @@ public class BabelDocService {
         if (totalPages <= 0) {
             throw new IllegalArgumentException("BabelDOC 页面范围无效");
         }
-        int chunkSize = Math.max(1, Math.min(config.getMaxPagesPerChunk(), maxPagesPerChunk));
+        int chunkSize = Math.max(1, Math.min(tuning.pagesPerChunk(), maxPagesPerChunk));
         if (totalPages <= chunkSize) {
             return translateRange(inputPdf, resultDir, fileName, startPage, endPage,
                     fontFamily, firstPendingQps,
@@ -236,7 +248,7 @@ public class BabelDocService {
             outputReader.setDaemon(true);
             outputReader.start();
 
-            boolean completed = waitForCompletionOrResourceRisk(process, Duration.ofSeconds(config.getTimeoutSeconds()));
+            boolean completed = waitForCompletionOrResourceRisk(process, Duration.ofSeconds(tuning.timeoutSeconds()));
             if (!completed) {
                 terminateProcessTree(process);
                 throw new IllegalStateException("BabelDOC 处理超时，请缩小页面范围或调大 BABELDOC_TIMEOUT_SECONDS");
@@ -543,13 +555,20 @@ public class BabelDocService {
         }
     }
 
-    private void parseProgress(String line, Consumer<ProgressUpdate> progressConsumer) {
+    void parseProgress(String line, Consumer<ProgressUpdate> progressConsumer) {
         if (progressConsumer == null || !line.startsWith("{")) return;
         try {
             JsonNode root = objectMapper.readTree(line);
-            if (!"progress".equals(root.path("type").asText())) return;
+            String type = root.path("type").asText();
+            if ("rate-limit".equals(type)) {
+                // The runner is backing off after an HTTP 429; keep the bar where it is.
+                progressConsumer.accept(new ProgressUpdate(lastProgress, "rate-limited", 0, 0));
+                return;
+            }
+            if (!"progress".equals(type)) return;
+            lastProgress = root.path("overallProgress").asDouble();
             progressConsumer.accept(new ProgressUpdate(
-                    root.path("overallProgress").asDouble(),
+                    lastProgress,
                     root.path("stage").asText(),
                     root.path("stageCurrent").asInt(),
                     root.path("stageTotal").asInt()));
@@ -630,19 +649,19 @@ public class BabelDocService {
 
     private Optional<String> detectResourceRisk() {
         CgroupMemory cgroupMemory = readCgroupMemory();
-        long cgroupRiskBytes = mibToBytes(config.getResourceCgroupLimitMiB());
+        long cgroupRiskBytes = mibToBytes(tuning.memoryLimitMiB());
         if (cgroupMemory.workingSetBytes() > cgroupRiskBytes) {
             return Optional.of("服务工作集 " + formatMiB(cgroupMemory.workingSetBytes())
-                    + " MiB 超过阈值 " + config.getResourceCgroupLimitMiB()
+                    + " MiB 超过阈值 " + tuning.memoryLimitMiB()
                     + " MiB（总内存 " + formatMiB(cgroupMemory.currentBytes())
                     + " MiB，可回收文件缓存 " + formatMiB(cgroupMemory.inactiveFileBytes()) + " MiB）");
         }
 
         MemoryInfo memoryInfo = readMemoryInfo();
-        long minAvailableBytes = mibToBytes(config.getResourceMinAvailableMiB());
+        long minAvailableBytes = mibToBytes(tuning.minAvailableMiB());
         if (memoryInfo.memAvailableBytes > 0 && memoryInfo.memAvailableBytes < minAvailableBytes) {
             return Optional.of("系统可用内存 " + formatMiB(memoryInfo.memAvailableBytes)
-                    + " MiB 低于阈值 " + config.getResourceMinAvailableMiB() + " MiB");
+                    + " MiB 低于阈值 " + tuning.minAvailableMiB() + " MiB");
         }
         if (memoryInfo.swapTotalBytes <= 0) {
             return Optional.empty();
@@ -653,11 +672,11 @@ public class BabelDocService {
         long serviceSwap = cgroupMemory.swapBytes();
         long swapUsed = serviceSwap >= 0
                 ? serviceSwap : memoryInfo.swapTotalBytes - memoryInfo.swapFreeBytes;
-        long maxSwapUsedBytes = mibToBytes(config.getResourceMaxSwapUsedMiB());
+        long maxSwapUsedBytes = mibToBytes(tuning.maxSwapUsedMiB());
         if (swapUsed > maxSwapUsedBytes) {
             return Optional.of((serviceSwap >= 0 ? "服务 Swap 已用 " : "Swap 已用 ")
                     + formatMiB(swapUsed)
-                    + " MiB 超过阈值 " + config.getResourceMaxSwapUsedMiB() + " MiB");
+                    + " MiB 超过阈值 " + tuning.maxSwapUsedMiB() + " MiB");
         }
         if (memoryInfo.swapFreeBytes < mibToBytes(MIN_SYSTEM_SWAP_FREE_MIB)) {
             return Optional.of("系统 Swap 剩余 " + formatMiB(memoryInfo.swapFreeBytes)
@@ -704,7 +723,7 @@ public class BabelDocService {
         }
         MemoryInfo memoryInfo = readMemoryInfo();
         long recoveryAvailableMiB = Math.max(
-                600L, config.getResourceMinAvailableMiB() + 200L);
+                600L, tuning.minAvailableMiB() + 200L);
         if (memoryInfo.memAvailableBytes > 0
                 && memoryInfo.memAvailableBytes < mibToBytes(recoveryAvailableMiB)) {
             return Optional.of("系统可用内存 " + formatMiB(memoryInfo.memAvailableBytes)

@@ -36,9 +36,10 @@ export async function uploadTranslationFile(file) {
   return json(await fetch(`${API}/upload`, { method: 'POST', body: formData }))
 }
 
-/** 开始翻译（指定页面范围、字体风格和并发） */
-export async function startTranslation(taskId, startPage, endPage, fontFamily = 'auto', qps = 4) {
-  const params = new URLSearchParams({ startPage, endPage, fontFamily, qps })
+/** 开始翻译（指定页面范围和字体风格；并发不传时由设置页的性能档位决定） */
+export async function startTranslation(taskId, startPage, endPage, fontFamily = 'auto', qps) {
+  const params = new URLSearchParams({ startPage, endPage, fontFamily })
+  if (qps) params.set('qps', qps)
   return json(await fetch(`${API}/start/${encodeURIComponent(taskId)}?${params}`, { method: 'POST' }))
 }
 
@@ -62,6 +63,31 @@ export function getTranslatedPdfBlob(taskId, mode = 'translated') {
 
 export function getTranslatedImageBlob(taskId, mode = 'translated') {
   return blob(`${API}/download-image/${encodeURIComponent(taskId)}?mode=${encodeURIComponent(mode)}`, '读取翻译图片失败')
+}
+
+// ==================== 设置 ====================
+
+/** 当前设置；API Key 只返回末 4 位 */
+export async function getSettings() {
+  return json(await fetch('/api/settings', { cache: 'no-store' }))
+}
+
+/** 部分更新：未出现的字段不变，null 恢复为 .env / 默认值，API Key 留空表示不修改 */
+export async function saveSettings(changes) {
+  return json(await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes)
+  }))
+}
+
+/** 用一个极小请求测试模型连接，不保存 */
+export async function testSettings(body) {
+  return json(await fetch('/api/settings/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }))
 }
 
 /** 下载：后端用 Content-Disposition 给出文件名 */

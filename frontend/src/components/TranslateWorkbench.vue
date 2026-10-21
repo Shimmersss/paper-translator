@@ -1,10 +1,23 @@
 <template>
   <div class="translate-page tool-page">
     <div class="container">
-      <div class="tool-page__header">
-        <h1>论文翻译</h1>
-        <p>上传 PDF 或 PNG、JPG 等常见图片，翻译后生成保留版式的中文或双语结果。</p>
+      <div class="tool-page__header page-header">
+        <div>
+          <h1>论文翻译</h1>
+          <p>上传 PDF 或 PNG、JPG 等常见图片，翻译后生成保留版式的中文或双语结果。</p>
+        </div>
+        <n-button class="settings-button" secondary @click="showSettings = true">
+          <template #icon><n-icon><SettingsOutline /></n-icon></template>
+          设置
+        </n-button>
       </div>
+      <SettingsDrawer v-model:show="showSettings" @saved="applySettings" />
+
+      <n-alert v-if="missingPdfKey" type="info" title="还没有配置翻译模型" class="setup-hint">
+        翻译 PDF 需要一个 OpenAI 兼容接口的 API Key。
+        <n-button text type="primary" @click="showSettings = true">打开设置</n-button>
+        填写，或写入 <code>.env</code> 后重启。
+      </n-alert>
 
       <!-- 上传态 -->
       <div v-if="step === 'upload'" class="upload-section">
@@ -98,13 +111,7 @@
               style="width: 100%"
             />
             <p v-if="!isImageInput" class="range-hint">字号由 BabelDOC 根据原始文本框自动适配，以尽量保持版式。</p>
-
-            <div v-if="!isImageInput" class="range-label option-label">翻译速度</div>
-            <n-radio-group v-if="!isImageInput" v-model:value="translationQps" size="small" :disabled="isUploading || !taskId">
-              <n-radio-button :value="2">稳定模式</n-radio-button>
-              <n-radio-button :value="4">加速模式</n-radio-button>
-            </n-radio-group>
-            <p v-if="!isImageInput" class="range-hint">每份新任务默认优先加速模式；某一分片触发内存保护时仅回退该分片，下一分片仍优先尝试加速。</p>
+            <p v-if="!isImageInput" class="range-hint">并发和每批页数由设置里的性能档位决定；内存紧张时会自动降低并发重试。</p>
 
             <n-button
               type="primary"
@@ -182,10 +189,10 @@
         <n-alert
           v-if="resourceDowngraded"
           type="warning"
-          title="已自动切换稳定模式"
+          title="已自动降低并发"
           style="margin-top: 16px"
         >
-          服务器内存压力较高，已停止加速翻译并使用稳定模式重新处理当前任务。
+          内存压力较高，已降低并发重新处理当前任务。
         </n-alert>
 
         <div class="next-submission">
@@ -325,7 +332,8 @@ import {
   CheckmarkCircleOutline,
   DownloadOutline,
   AlertCircleOutline,
-  RefreshOutline
+  RefreshOutline,
+  SettingsOutline
 } from '@vicons/ionicons5'
 import {
   uploadTranslationFile,
@@ -337,12 +345,20 @@ import {
   downloadTranslatedPdf,
   getTranslatedPdfBlob,
   getTranslatedImageBlob,
-  downloadTranslatedImage
+  downloadTranslatedImage,
+  getSettings
 } from '@/api'
 // pdf.js is large; load it only when a result is previewed.
 const PdfCanvasPreview = defineAsyncComponent(() => import('@/components/PdfCanvasPreview.vue'))
+const SettingsDrawer = defineAsyncComponent(() => import('@/components/SettingsDrawer.vue'))
 
 const message = useMessage()
+const showSettings = ref(false)
+const missingPdfKey = ref(false)
+
+function applySettings (data) {
+  missingPdfKey.value = !data?.pdf?.apiKey?.set
+}
 const DEFAULT_FAST_QPS = 4
 
 // 状态
@@ -476,14 +492,15 @@ async function handleStartTranslate() {
   errorMsg.value = ''
 
   try {
-    const res = await startTranslation(taskId.value, startPage.value, endPage.value, fontFamily.value, translationQps.value)
+    const res = await startTranslation(taskId.value, startPage.value, endPage.value, fontFamily.value)
     if (res.code !== 200) {
       throw new Error(res.message || '启动翻译失败')
     }
 
     translateStartPage.value = startPage.value
     translateEndPage.value = endPage.value
-    requestedQps.value = translationQps.value
+    translationQps.value = res.data.qps || translationQps.value
+    requestedQps.value = res.data.requestedQps || translationQps.value
     resourceDowngraded.value = false
     isGeneratingPdf.value = false
     translationProgress.value = 0
@@ -742,9 +759,9 @@ function taskStatusLabel(item) {
 }
 
 function speedLabel(item) {
-  const currentQps = item.qps || item.requestedQps || 4
-  if (item.resourceDowngraded) return `已降级稳定模式 · ${currentQps} QPS`
-  return currentQps >= 4 ? `加速模式 · ${currentQps} QPS` : `稳定模式 · ${currentQps} QPS`
+  const currentQps = item.qps || item.requestedQps || 1
+  if (item.resourceDowngraded) return `已降低并发 · ${currentQps}`
+  return `并发 ${currentQps}`
 }
 
 function taskTagType(status) {
@@ -812,6 +829,7 @@ async function restoreTask(savedTaskId, notify = false) {
 
 // 页面加载时检查是否有进行中的任务
 onMounted(async () => {
+  getSettings().then((res) => { if (res.code === 200) applySettings(res.data) }).catch(() => {})
   await loadRecentTranslations()
   recentRefreshTimer = window.setInterval(loadRecentTranslations, 5000)
   const requestedTaskId = new URLSearchParams(window.location.search).get('taskId') || ''
@@ -840,6 +858,26 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped lang="scss">
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-button {
+  flex-shrink: 0;
+  margin-top: 6px;
+}
+
+.setup-hint {
+  margin-bottom: 20px;
+
+  code {
+    font-size: 12px;
+  }
+}
+
 .translate-page {
   background: var(--desk-bg);
 }

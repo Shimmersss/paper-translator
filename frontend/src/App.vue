@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides">
+  <n-config-provider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <main>
         <TranslateWorkbench />
@@ -10,7 +10,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { NConfigProvider, NMessageProvider, darkTheme } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui'
 import TranslateWorkbench from '@/components/TranslateWorkbench.vue'
 
 const media = window.matchMedia('(prefers-color-scheme: dark)')

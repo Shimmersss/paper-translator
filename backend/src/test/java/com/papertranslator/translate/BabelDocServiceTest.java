@@ -301,6 +301,16 @@ class BabelDocServiceTest {
     }
 
     @Test
+    void reportsProviderRateLimitsWithoutMovingTheProgressBar() {
+        BabelDocService service = new BabelDocService(new BabelDocConfig(), mock(ProviderSettings.class));
+        List<BabelDocService.ProgressUpdate> updates = new ArrayList<>();
+        service.parseProgress("{\"type\": \"progress\", \"stage\": \"Translate Paragraphs\", \"overallProgress\": 42.5}", updates::add);
+        service.parseProgress("{\"type\": \"rate-limit\"}", updates::add);
+        assertEquals("rate-limited", updates.get(1).stage());
+        assertEquals(42.5, updates.get(1).progress());
+    }
+
+    @Test
     void retranslatesChunksCachedBeforeTheTitledAppendixFix() throws Exception {
         // Titled appendix headings changed which pages are kept as references, so
         // chunks left by an interrupted run before that fix may hold untranslated

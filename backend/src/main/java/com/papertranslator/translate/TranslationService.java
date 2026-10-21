@@ -1,7 +1,9 @@
 package com.papertranslator.translate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.papertranslator.config.BabelDocConfig;
 import com.papertranslator.config.TranslationConfig;
+import com.papertranslator.settings.Tuning;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +39,8 @@ public class TranslationService {
     private final ConcurrentHashMap<String, TranslationSession> sessions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<SseEmitter>> emitters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Future<?>> taskFutures = new ConcurrentHashMap<>();
+    private final Tuning tuning;
+    private final Object queueLock = new Object();
     private final ThreadPoolExecutor executor;
     private Path storageDir;
 
@@ -45,18 +49,28 @@ public class TranslationService {
         this(pdfParseService, babelDocService, config, objectMapper, null);
     }
 
-    @Autowired
     public TranslationService(PdfParseService pdfParseService, BabelDocService babelDocService,
                               TranslationConfig config, ObjectMapper objectMapper,
                               ImageTranslationService imageTranslationService) {
+        this(pdfParseService, babelDocService, config, objectMapper, imageTranslationService,
+                Tuning.fromConfig(new BabelDocConfig(), config));
+    }
+
+    @Autowired
+    public TranslationService(PdfParseService pdfParseService, BabelDocService babelDocService,
+                              TranslationConfig config, ObjectMapper objectMapper,
+                              ImageTranslationService imageTranslationService, Tuning tuning) {
         this.pdfParseService = pdfParseService;
         this.babelDocService = babelDocService;
         this.config = config;
         this.objectMapper = objectMapper;
         this.imageTranslationService = imageTranslationService;
+        this.tuning = tuning;
+        // Unbounded here; the capacity from settings is enforced on submission so
+        // it can change without a restart.
         this.executor = new ThreadPoolExecutor(
                 1, 1, 0L, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(Math.max(1, config.getQueueCapacity())),
+                new LinkedBlockingQueue<>(),
                 runnable -> {
                     Thread thread = new Thread(runnable, "translation-worker");
                     thread.setDaemon(true);
@@ -73,7 +87,7 @@ public class TranslationService {
         cleanupHistory();
         resumeIncompleteSessions(recoveredSessions);
         log.info("翻译队列已启动: workers=1, queueCapacity={}, maxHistory={}, storage={}",
-                config.getQueueCapacity(), maxHistory(), storageDir);
+                tuning.queueCapacity(), maxHistory(), storageDir);
     }
 
     @PreDestroy
@@ -154,6 +168,15 @@ public class TranslationService {
             session.setPageRange(effectiveStart, effectiveEnd);
             session.setFontFamily(validateFontFamily(fontFamily));
             session.setQps(validateQps(qps));
+            synchronized (queueLock) {
+                long waiting = sessions.values().stream()
+                        .filter(other -> other != session && "queued".equals(other.getStatus()))
+                        .count();
+                if (waiting >= tuning.queueCapacity()) {
+                    throw new IllegalStateException("翻译队列已满，请等待前面的任务完成后再提交");
+                }
+                session.setStatus("queued");
+            }
             session.setRequestedQps(session.getQps());
             session.setResourceDowngraded(false);
             session.setResourceDowngradeReason(null);
@@ -684,7 +707,12 @@ public class TranslationService {
     }
 
     private int maxHistory() {
-        return Math.max(1, config.getMaxHistory());
+        return Math.max(1, tuning.maxHistory());
+    }
+
+    /** Concurrency for a task submitted without an explicit value. */
+    public int defaultQps() {
+        return tuning.qps();
     }
 
     /** Previews and terminal jobs retain independent bounded lists, matching the existing task-state lifecycle. */
@@ -734,7 +762,7 @@ public class TranslationService {
     }
 
     private int validateQps(int qps) {
-        int maxQps = Math.max(1, config.getMaxQps());
+        int maxQps = Math.max(1, tuning.maxQps());
         if (qps < 1 || qps > maxQps) {
             throw new IllegalArgumentException("并发数必须在 1-" + maxQps + " 之间");
         }
@@ -742,8 +770,7 @@ public class TranslationService {
     }
 
     private int stableQps() {
-        int maxQps = Math.max(1, config.getMaxQps());
-        return Math.max(1, Math.min(config.getStableQps(), maxQps));
+        return Math.max(1, tuning.stableQps());
     }
 
     private int effectiveStart(TranslationSession session) { return session.getStartPage(); }
@@ -760,6 +787,7 @@ public class TranslationService {
             case "resource-downgrade" -> "内存压力较高，已切换稳定模式重试";
             case "single-page-fallback" -> "内存压力仍较高，已切换为逐页翻译";
             case "resource-recovery" -> "正在等待服务器内存恢复";
+            case "rate-limited" -> "模型服务商限流，正在重试；频繁出现时请在设置中调低服务商并发上限";
             case "chunk-wait" -> "正在释放内存，准备下一批";
             case "chunk-completed" -> "已完成一批页面";
             case "merge" -> "正在合并翻译结果";

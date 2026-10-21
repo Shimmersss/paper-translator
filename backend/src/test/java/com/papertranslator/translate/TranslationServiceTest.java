@@ -90,6 +90,62 @@ class TranslationServiceTest {
     }
 
     @Test
+    void appliesAQueueCapacityChangeWithoutARestart() throws Exception {
+        PdfParseService pdfParseService = mock(PdfParseService.class);
+        BabelDocService babelDocService = mock(BabelDocService.class);
+        TranslationConfig config = new TranslationConfig();
+        config.setStorageDir(tempDir.toString());
+        when(pdfParseService.getTotalPages(any(Path.class))).thenReturn(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        when(babelDocService.translatePdf(any(), any(), anyString(), anyInt(), anyInt(), anyString(), anyInt(), any()))
+                .thenAnswer(invocation -> {
+                    release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    Path resultDir = invocation.getArgument(1);
+                    Files.writeString(resultDir.resolve("translated.pdf"), "t");
+                    Files.writeString(resultDir.resolve("bilingual.pdf"), "b");
+                    return new BabelDocService.TranslationResult(resultDir.resolve("translated.pdf"), resultDir.resolve("bilingual.pdf"));
+                });
+        java.util.concurrent.atomic.AtomicInteger capacity = new java.util.concurrent.atomic.AtomicInteger(1);
+        com.papertranslator.settings.Tuning base = com.papertranslator.settings.Tuning.fromConfig(new com.papertranslator.config.BabelDocConfig(), config);
+        com.papertranslator.settings.Tuning tuning = new com.papertranslator.settings.Tuning() {
+            @Override public int qps() { return 2; }
+            @Override public int stableQps() { return 1; }
+            @Override public int maxQps() { return 4; }
+            @Override public int pagesPerChunk() { return 1; }
+            @Override public int memoryLimitMiB() { return base.memoryLimitMiB(); }
+            @Override public int minAvailableMiB() { return base.minAvailableMiB(); }
+            @Override public int maxSwapUsedMiB() { return base.maxSwapUsedMiB(); }
+            @Override public int timeoutSeconds() { return base.timeoutSeconds(); }
+            @Override public int queueCapacity() { return capacity.get(); }
+            @Override public int maxHistory() { return 20; }
+        };
+        TranslationService service = new TranslationService(pdfParseService, babelDocService, config, new ObjectMapper(), null, tuning);
+        service.initialize();
+        try {
+            List<String> ids = new java.util.ArrayList<>();
+            for (int index = 0; index < 4; index++) {
+                ids.add(service.createSessionPreview("p" + index + ".pdf", new ByteArrayInputStream("pdf".getBytes())).getTaskId());
+            }
+            service.startTranslation(ids.get(0), 1, 1, "auto", service.defaultQps());
+            awaitStatus(service, ids.get(0), "translating");
+            service.startTranslation(ids.get(1), 1, 1, "auto", service.defaultQps());
+            assertThrows(IllegalStateException.class, () -> service.startTranslation(ids.get(2), 1, 1, "auto", 2));
+            assertEquals("preview", service.getSession(ids.get(2)).getStatus());
+
+            capacity.set(2);
+            service.startTranslation(ids.get(2), 1, 1, "auto", 2);
+            assertEquals("queued", service.getSession(ids.get(2)).getStatus());
+            assertEquals(2, service.getSession(ids.get(1)).getQps());
+
+            release.countDown();
+            for (String id : ids.subList(0, 3)) awaitStatus(service, id, "completed");
+        } finally {
+            release.countDown();
+            service.shutdown();
+        }
+    }
+
+    @Test
     void queuesTranslationAndKeepsRecentResultFilesOnDisk() throws Exception {
         PdfParseService pdfParseService = mock(PdfParseService.class);
         BabelDocService babelDocService = mock(BabelDocService.class);

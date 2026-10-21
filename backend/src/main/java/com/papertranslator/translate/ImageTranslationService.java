@@ -3,6 +3,7 @@ package com.papertranslator.translate;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.papertranslator.config.LlmConfig;
+import com.papertranslator.config.ProviderSettings;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -10,6 +11,7 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
@@ -65,10 +67,17 @@ public class ImageTranslationService {
 
     private final LlmService llmService;
     private final LlmConfig llmConfig;
+    private final ProviderSettings providers;
 
     public ImageTranslationService(LlmService llmService, LlmConfig llmConfig) {
+        this(llmService, llmConfig, null);
+    }
+
+    @Autowired
+    public ImageTranslationService(LlmService llmService, LlmConfig llmConfig, ProviderSettings providers) {
         this.llmService = llmService;
         this.llmConfig = llmConfig;
+        this.providers = providers;
     }
 
     public java.util.Optional<String> configurationProblem() {
@@ -110,7 +119,7 @@ public class ImageTranslationService {
     }
 
     private String visionModel() {
-        String model = llmConfig.getVisionModel();
+        String model = providers != null ? providers.llmVisionModel() : llmConfig.getVisionModel();
         return model == null || model.isBlank() ? null : model.trim();
     }
 

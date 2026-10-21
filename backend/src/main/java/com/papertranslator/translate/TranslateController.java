@@ -85,10 +85,12 @@ public class TranslateController {
                                    @RequestParam(defaultValue = "1") int startPage,
                                    @RequestParam(required = false) Integer endPage,
                                    @RequestParam(defaultValue = "auto") String fontFamily,
-                                   @RequestParam(defaultValue = "4") int qps) {
+                                   @RequestParam(required = false) Integer qps) {
         try {
+            // Without qps the performance tier from the settings page decides.
             TranslationSession session = translationService.startTranslation(
-                    taskId, startPage, endPage != null ? endPage : Integer.MAX_VALUE, fontFamily, qps);
+                    taskId, startPage, endPage != null ? endPage : Integer.MAX_VALUE, fontFamily,
+                    qps != null ? qps : translationService.defaultQps());
 
             return ResponseEntity.ok(Map.of(
                     "code", 200,

@@ -329,7 +329,8 @@ class RepairingOpenAITranslator(OpenAITranslator):
         self.add_cache_impact_parameters("translation_completeness", COMPLETION_CACHE_VERSION)
 
     @retry(retry=retry_if_exception_type(openai.RateLimitError),
-           stop=stop_after_attempt(100), wait=wait_exponential(multiplier=1, min=1, max=15))
+           stop=stop_after_attempt(100), wait=wait_exponential(multiplier=1, min=1, max=15),
+           before_sleep=lambda _state: emit({"type": "rate-limit"}))
     def _complete_with_retry(self, text, rate_limit_params, plain):
         return complete_translation(self, text, rate_limit_params, plain=plain)
 
