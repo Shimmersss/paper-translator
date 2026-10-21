@@ -45,6 +45,21 @@ def checked_content(response):
     return content
 
 
+def fail_closed(translator, call):
+    """Mark the document incomplete when a paragraph finally fails.
+
+    BabelDOC logs a failed paragraph and carries on, so without this a rejected
+    model name, an invalid key or an exhausted rate-limit retry would still end
+    in "finish" with the original text left in the PDF. Callers wrap the whole
+    retry loop, so a rate limit that later succeeds does not trip it.
+    """
+    try:
+        return call()
+    except Exception:
+        translator._paper_translator_incomplete_translation = True
+        raise
+
+
 def complete_translation(translator, text, rate_limit_params=None, *, plain=False):
     """Retry incomplete responses with bounded, increasing output budgets.
 

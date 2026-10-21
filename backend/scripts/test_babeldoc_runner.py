@@ -97,6 +97,7 @@ class ReferenceLayoutTest(unittest.TestCase):
             "Supporting Information",
             "Methods",
             "Acknowledgements",
+            "GraspGen-X: Supplementary Material",
         ):
             with self.subTest(heading=heading):
                 self.assertEqual(
@@ -117,6 +118,14 @@ class ReferenceLayoutTest(unittest.TestCase):
                 ]
             ),
         )
+        for entry in (
+            "[12] Smith: Supplementary Material",
+            "J. Smith: Supporting Information",
+        ):
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    [True, True], reference_section_flags(["References", entry])
+                )
 
     def test_only_splits_sequential_bibliographic_entries(self):
         self.assertEqual(

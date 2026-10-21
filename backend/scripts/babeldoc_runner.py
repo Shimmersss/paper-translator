@@ -9,7 +9,7 @@ import statistics
 from pathlib import Path
 
 from tokenizer_cache import configure_tokenizer_cache
-from translation_completion import COMPLETION_CACHE_VERSION, complete_translation
+from translation_completion import COMPLETION_CACHE_VERSION, complete_translation, fail_closed
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 import openai
 from pdf_ocr import line_fill_boxes, prepare_pdf_text, preserve_textless_pages
@@ -330,13 +330,16 @@ class RepairingOpenAITranslator(OpenAITranslator):
 
     @retry(retry=retry_if_exception_type(openai.RateLimitError),
            stop=stop_after_attempt(100), wait=wait_exponential(multiplier=1, min=1, max=15))
-    def do_translate(self, text, rate_limit_params=None):
-        return complete_translation(self, repair_pdf_font_text(text), rate_limit_params, plain=True)
+    def _complete_with_retry(self, text, rate_limit_params, plain):
+        return complete_translation(self, text, rate_limit_params, plain=plain)
 
-    @retry(retry=retry_if_exception_type(openai.RateLimitError),
-           stop=stop_after_attempt(100), wait=wait_exponential(multiplier=1, min=1, max=15))
+    def do_translate(self, text, rate_limit_params=None):
+        return fail_closed(self, lambda: self._complete_with_retry(
+            repair_pdf_font_text(text), rate_limit_params, True))
+
     def do_llm_translate(self, text, rate_limit_params=None):
-        return complete_translation(self, repair_pdf_font_text(text), rate_limit_params)
+        return fail_closed(self, lambda: self._complete_with_retry(
+            repair_pdf_font_text(text), rate_limit_params, False))
 
 
 async def run(args):

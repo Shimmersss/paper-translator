@@ -26,6 +26,9 @@ REFERENCE_HEADING_RE = re.compile(
 # untranslated. Only the keywords are case-insensitive so that ordinary prose
 # such as "Appendix is given" does not end the section.
 _SECTION_NUMBER = r"(?:(?:[A-Z]|\d{1,2}(?:\.\d{1,2})*)[.)]?\s+)?"
+# Running-title prefix such as "GraspGen-X: Supplementary Material". It may not
+# contain a period or start like a numbered entry ("[12] ...", "(3) ...").
+_TITLE_PREFIX = r"(?:(?![\[(\d])[^.:\uff1a\n]{1,80}[:\uff1a]\s*)?"
 _APPENDIX_HEADING = (
     r"(?i:appendix|appendices)"
     r"(?:\s+(?:[A-Z]|[IVX]{1,4}|\d{1,2})(?:\.\d{1,2})*)?"
@@ -38,7 +41,7 @@ _POST_REFERENCE_HEADING = (
     r"\s*[.:\uff1a]?"
 )
 REFERENCE_SECTION_END_RE = re.compile(
-    rf"^\s*{_SECTION_NUMBER}(?:{_APPENDIX_HEADING}|{_POST_REFERENCE_HEADING})\s*$"
+    rf"^\s*{_TITLE_PREFIX}{_SECTION_NUMBER}(?:{_APPENDIX_HEADING}|{_POST_REFERENCE_HEADING})\s*$"
 )
 REFERENCE_AUTHOR_RE = re.compile(
     r"^\s*(?:[A-Z][A-Za-z'’-]+,\s*(?:[A-Z]\.?\s*){1,3}|"

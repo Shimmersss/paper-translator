@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock
 
 from translation_completion import (
-    IncompleteTranslationError, checked_content, complete_translation,
+    IncompleteTranslationError, checked_content, complete_translation, fail_closed,
 )
 
 
@@ -66,6 +66,19 @@ class TranslationCompletionTest(unittest.TestCase):
         engine = translator()
         self.assertIsNone(complete_translation(engine, None))
         engine.client.chat.completions.create.assert_not_called()
+
+    def test_provider_errors_mark_the_document_incomplete(self):
+        # A rejected model or key used to leave the paragraph untranslated while
+        # BabelDOC still reported "finish".
+        engine = translator(RuntimeError("Error code: 400 - Unsupported model"))
+        with self.assertRaises(RuntimeError):
+            fail_closed(engine, lambda: complete_translation(engine, "Hello"))
+        self.assertTrue(engine._paper_translator_incomplete_translation)
+
+    def test_successful_calls_leave_the_document_complete(self):
+        engine = translator(response("你好"))
+        self.assertEqual("你好", fail_closed(engine, lambda: complete_translation(engine, "Hello")))
+        self.assertFalse(getattr(engine, "_paper_translator_incomplete_translation", False))
 
 
 if __name__ == "__main__":

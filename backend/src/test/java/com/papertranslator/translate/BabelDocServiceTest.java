@@ -81,8 +81,27 @@ class BabelDocServiceTest {
         resourceService(2519, 915, 580).waitForResourceRecovery();
     }
 
+    @Test
+    void otherDaemonsColdSwapDoesNotStopTranslation() {
+        // Production 2026-10-21: host swap 1135 MiB while idle, service only 176 MiB.
+        assertTrue(resourceService(2454, 1272, 176, 580).detectRecoveryRisk().isEmpty());
+        assertTrue(resourceService(2454, 1272, 1201, 580).detectRecoveryRisk()
+                .orElseThrow().contains("服务 Swap"));
+    }
+
+    @Test
+    void stillStopsWhenHostSwapIsNearlyExhausted() {
+        assertTrue(resourceService(2454, 1800, 176, 580).detectRecoveryRisk()
+                .orElseThrow().contains("系统 Swap 剩余"));
+    }
+
     private BabelDocService resourceService(long availableMiB, long swapUsedMiB,
                                              long workingSetMiB) {
+        return resourceService(availableMiB, swapUsedMiB, -1, workingSetMiB);
+    }
+
+    private BabelDocService resourceService(long availableMiB, long swapUsedMiB,
+                                             long serviceSwapMiB, long workingSetMiB) {
         BabelDocConfig config = new BabelDocConfig();
         config.setResourceRecoveryTimeoutSeconds(5);
         return new BabelDocService(config, mock(ProviderSettings.class)) {
@@ -94,7 +113,8 @@ class BabelDocServiceTest {
 
             @Override
             CgroupMemory readCgroupMemory() {
-                return new CgroupMemory(workingSetMiB * 1024 * 1024, 0);
+                return new CgroupMemory(workingSetMiB * 1024 * 1024, 0,
+                        serviceSwapMiB < 0 ? -1 : serviceSwapMiB * 1024 * 1024);
             }
         };
     }
@@ -153,7 +173,7 @@ class BabelDocServiceTest {
         writeTextPdf(cached.resolve("translated.pdf"), 4, 0, "");
         writeTextPdf(cached.resolve("bilingual.pdf"), 4, 0, "");
         Files.writeString(resultDir.resolve(".babeldoc-chunks/shared/manifest.txt"), String.join("\n",
-                "version=2", "completion=complete-v1", "input=" + tempDir.resolve("input.pdf").toAbsolutePath().normalize(),
+                "version=2", "completion=complete-v1", "references=titled-appendix-v1", "input=" + tempDir.resolve("input.pdf").toAbsolutePath().normalize(),
                 "chunkSize=4", "fontFamily=auto", "model=null"));
 
         service.translatePdf(tempDir.resolve("input.pdf"), resultDir, "paper.pdf",
@@ -195,7 +215,7 @@ class BabelDocServiceTest {
         writeTextPdf(legacyChunk.resolve("translated.pdf"), 4, 0, "");
         writeTextPdf(legacyChunk.resolve("bilingual.pdf"), 4, 0, "");
         Files.writeString(resultDir.resolve(".babeldoc-chunks/1-10/manifest.txt"), String.join("\n",
-                "version=1", "completion=complete-v1", "input=" + Files.size(tempDir.resolve("input.pdf"))
+                "version=1", "completion=complete-v1", "references=titled-appendix-v1", "input=" + Files.size(tempDir.resolve("input.pdf"))
                         + ":" + Files.getLastModifiedTime(tempDir.resolve("input.pdf")).toMillis(),
                 "pages=1-10", "chunkSize=4", "fontFamily=auto", "model=null"));
 
@@ -255,6 +275,11 @@ class BabelDocServiceTest {
         assertTrue(BabelDocService.referenceSectionActiveAfter(
                 "Appendix is cited here\nMethods Appl. Mech. Eng. 200 (2011)", true));
         assertFalse(BabelDocService.referenceSectionActiveAfter("Supporting Information", true));
+        // Production c5f2f327: the appendix heading carries the paper's short title.
+        assertFalse(BabelDocService.referenceSectionActiveAfter(
+                "References\n[71] Z. Wei. D(r,o) grasp. 2025.\nGraspGen-X: Supplementary Material\nA. Procedural Gripper Generator", false));
+        assertTrue(BabelDocService.referenceSectionActiveAfter("[12] Smith: Supplementary Material", true));
+        assertTrue(BabelDocService.referenceSectionActiveAfter("J. Smith: Supporting Information", true));
     }
 
     @Test
@@ -273,6 +298,28 @@ class BabelDocServiceTest {
 
         assertEquals(List.of(
                 "1-4@4", "5-8@4", "1-4@2", "5-8@2", "9-10@2"), service.calls);
+    }
+
+    @Test
+    void retranslatesChunksCachedBeforeTheTitledAppendixFix() throws Exception {
+        // Titled appendix headings changed which pages are kept as references, so
+        // chunks left by an interrupted run before that fix may hold untranslated
+        // appendices. The version line alone is ignored for legacy compatibility.
+        RecordingBabelDocService service = newService();
+        service.failAcceleratedSecondChunk.set(true);
+        Path resultDir = tempDir.resolve("result");
+        assertThrows(BabelDocService.ResourcePressureException.class,
+                () -> service.translatePdf(tempDir.resolve("input.pdf"), resultDir,
+                        "paper.pdf", 1, 8, "auto", 4, ignored -> { }));
+        Path manifest = resultDir.resolve(".babeldoc-chunks/shared/manifest.txt");
+        assertTrue(Files.readString(manifest).startsWith("version=5\n"));
+        Files.writeString(manifest, Files.readString(manifest)
+                .replace("version=5", "version=4").replace("references=titled-appendix-v1\n", ""));
+
+        service.translatePdf(tempDir.resolve("input.pdf"), resultDir, "paper.pdf",
+                1, 8, "auto", 2, ignored -> { });
+
+        assertEquals(List.of("1-4@4", "5-8@4", "1-4@2", "5-8@2"), service.calls);
     }
 
     @Test
