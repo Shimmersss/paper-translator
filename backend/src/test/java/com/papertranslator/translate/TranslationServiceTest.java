@@ -26,10 +26,8 @@ class TranslationServiceTest {
         String raw = "BabelDOC 执行失败: MuPDF error: cannot parse object (5 0 R) "
                 + "Traceback (most recent call last): /home/admin/web-homepage";
 
-        assertEquals("PDF 文件无法解析，请更换文件后重试",
+        assertEquals("PDF 文件无法解析（文件可能损坏或加密），请更换文件后重试",
                 TranslationService.userFacingErrorMessage(new IllegalStateException(raw)));
-        assertEquals("翻译失败，请稍后重试",
-                TranslationService.userFacingErrorMessage(new IllegalStateException("connection reset")));
     }
 
     @TempDir

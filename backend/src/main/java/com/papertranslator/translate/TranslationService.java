@@ -475,13 +475,7 @@ public class TranslationService {
     }
 
     static String userFacingErrorMessage(Exception error) {
-        String message = error.getMessage();
-        if (message != null && (message.contains("MuPDF error")
-                || message.contains("cannot save with zero pages")
-                || message.contains("cannot parse object"))) {
-            return "PDF 文件无法解析，请更换文件后重试";
-        }
-        return "翻译失败，请稍后重试";
+        return FailureReasons.describe(error);
     }
 
     private String safeBaseName(String fileName) {
