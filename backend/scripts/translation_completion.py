@@ -61,8 +61,8 @@ class ParagraphOutcomes:
     """Which paragraphs reached the PDF translated and which kept their source text.
 
     BabelDOC logs a failed paragraph and carries on with the original text, so
-    the runner reports these counts and the backend decides whether the task
-    may be delivered. Only paragraph identities and page numbers are kept.
+    the runner reports these counts as advisory warnings. Failed paragraphs
+    do not block PDF delivery. Only paragraph identities and page numbers are kept.
     """
 
     def __init__(self):
@@ -122,6 +122,16 @@ class ParagraphOutcomes:
                 "unattributed": self.unattributed + failed_pages.get(None, 0),
                 "reason": self.last_reason,
             }
+
+    def report(self):
+        """Report unsuccessful paragraphs without rejecting a generated PDF."""
+        summary = self.summary()
+        if summary["failed"] or summary["unattributed"]:
+            LOG.warning(
+                "部分段落翻译失败，已保留原文并继续交付: failed=%s, pages=%s, unattributed=%s",
+                summary["failed"], summary["failedPages"], summary["unattributed"],
+            )
+        return summary
 
 
 def fail_closed(outcomes, call):

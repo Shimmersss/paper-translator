@@ -451,14 +451,8 @@ async def run(args):
             emit({"type": "error", "message": str(event.get("error", "BabelDOC 翻译失败"))})
             raise RuntimeError(event.get("error", "BabelDOC 翻译失败"))
         elif event_type == "finish":
-            summary = translator.outcomes.summary()
-            reason = f"（{summary['reason']}）" if summary["reason"] else ""
-            if summary["untranslatedPages"]:
-                pages = "、".join(str(page) for page in summary["untranslatedPages"])
-                raise RuntimeError(f"第 {pages} 页没有段落翻译成功，已阻止交付{reason}")
-            if summary["unattributed"]:
-                raise RuntimeError(f"有段落翻译失败且无法定位页码，已阻止交付{reason}")
-            # The backend applies the document-wide limit on kept-source paragraphs.
+            summary = translator.outcomes.report()
+            # Completeness is advisory: preserve source text and report failures.
             emit({"type": "paragraphs", "translated": summary["translated"],
                   "failed": summary["failed"], "failedPages": summary["failedPages"],
                   "reason": summary["reason"]})

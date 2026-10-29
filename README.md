@@ -4,7 +4,7 @@
 
 A self-hosted web app that translates academic PDFs into Simplified Chinese while keeping the original layout. Upload a paper, pick a page range, and get a translated-only PDF and a side-by-side bilingual PDF you can preview in the browser and download. Images (posters, figures, screenshots) can be translated too, using a vision model.
 
-It wraps [BabelDOC](https://github.com/funstory-ai/BabelDOC) with what a long-running service needs: a persistent task queue, chunked processing that resumes after failures, memory protection on small servers, OCR for scanned pages, and checks that refuse to deliver a PDF with missing translations. It was extracted from a personal site where it has been translating real papers on a 2 vCPU / 4 GB server; accounts and billing were removed for this release.
+It wraps [BabelDOC](https://github.com/funstory-ai/BabelDOC) with what a long-running service needs: a persistent task queue, chunked processing that resumes after failures, memory protection on small servers, OCR for scanned pages, and advisory warnings for paragraphs that remain untranslated. It was extracted from a personal site where it has been translating real papers on a 2 vCPU / 4 GB server; accounts and billing were removed for this release.
 
 The interface is in Chinese.
 
@@ -17,7 +17,7 @@ The interface is in Chinese.
 - **Layout-preserving PDF translation.** BabelDOC rebuilds each page with the translation in place. You get `translated.pdf` and `bilingual.pdf`, a page-by-page preview, and a plain-text export.
 - **Long papers.** Pages are translated in small chunks that are cached on disk. If a run fails or the server restarts, finished chunks are reused and the job continues where it stopped. Narrowing the page range later does not throw away completed pages.
 - **Memory protection.** On Linux the service watches cgroup memory, available RAM and swap. Under pressure it stops BabelDOC, waits for memory to recover and retries at lower concurrency, falling back to one page at a time if needed.
-- **Complete or nothing.** Every paragraph's translation is checked. A truncated or empty answer is retried with a larger output budget, and a PDF with untranslated paragraphs is never delivered.
+- **Best-effort translation.** Truncated or empty answers are retried with larger output budgets. Paragraphs that still fail keep their original text, and the PDF remains downloadable with a warning listing the affected pages.
 - **Scanned pages.** Pages without a text layer go through Tesseract OCR first. Logos, covers and figures are kept, and the hidden text is sized from the actual glyphs so the translation is not tiny.
 - **References and appendices.** The bibliography is left in its original language, while appendices, supplementary material and acknowledgements that follow it are still translated.
 - **Image translation.** A vision model reads the text in a PNG/JPG/GIF/BMP, and the translation is drawn back over the image. Because the model's text boxes are only approximate, each one is snapped to the original strokes before covering. The cover follows the background color, including gradients and colored labels, so the original text does not show through. You can download it as a translated-only or bilingual PNG or PDF.
@@ -191,7 +191,7 @@ browser ──/api/translate──▶ Spring Boot ──▶ task queue (1 worker
              PDF ──────────────┼──▶ uv run … babeldoc_runner.py  (per chunk, watched for memory)
                                 │       ├─ pdf_ocr.py            Tesseract for textless pages
                                 │       ├─ reference_layout.py   keep the bibliography untranslated
-                                │       └─ translation_completion.py  reject incomplete answers
+                                │       └─ translation_completion.py  retry answers and report failures
                                 │
              image ────────────┴──▶ vision model ──▶ redraw text ──▶ PNG + PDF
 ```

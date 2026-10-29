@@ -58,10 +58,7 @@ public class BabelDocService {
     // untranslated appendices.
     private static final String REFERENCE_POLICY = "references=lettered-appendix-v1";
     private static final Pattern CHUNK_RANGE = Pattern.compile("^(\\d+)-(\\d+)$");
-    // A document may be delivered with at most this many paragraphs left in the
-    // source language (BabelDOC keeps the original text when a paragraph fails).
-    static final int MAX_KEPT_SOURCE_PARAGRAPHS = 3;
-    static final int MAX_KEPT_SOURCE_PERCENT = 2;
+    // Keep paragraph counts for advisory warnings and resumed chunks.
     private static final String CHUNK_PARAGRAPHS_FILE = "paragraphs.json";
     private static final Pattern REFERENCE_HEADING = Pattern.compile(
             "\\s*(?:references|bibliography|works\\s+cited|literature\\s+cited)\\s*",
@@ -152,11 +149,6 @@ public class BabelDocService {
                     fontFamily, firstPendingQps,
                     isReferenceSectionActiveBefore(inputPdf, startPage),
                     progressConsumer);
-            if (exceedsKeptSourceLimit(result.paragraphs())) {
-                deleteQuietly(result.translatedPdf());
-                deleteQuietly(result.bilingualPdf());
-                throw keptSourceLimitExceeded(fileName, result.paragraphs());
-            }
             return result;
         }
 
@@ -235,13 +227,6 @@ public class BabelDocService {
 
             ParagraphStats paragraphs = chunkParagraphs.values().stream()
                     .reduce(ParagraphStats.NONE, ParagraphStats::plus);
-            if (exceedsKeptSourceLimit(paragraphs)) {
-                // Retranslate only the chunks that kept source text on the next attempt.
-                chunkParagraphs.forEach((dir, stats) -> {
-                    if (stats.failed() > 0) deleteRecursively(dir);
-                });
-                throw keptSourceLimitExceeded(fileName, paragraphs);
-            }
             emitProgress(progressConsumer, 99.0, "merge", totalChunks, totalChunks);
             Files.createDirectories(resultDir);
             Path translatedResult = resultDir.resolve("translated.pdf");
@@ -665,7 +650,10 @@ public class BabelDocService {
             Map<Integer, Integer> failedPages = new TreeMap<>();
             for (Iterator<Map.Entry<String, JsonNode>> it = root.path("failedPages").fields(); it.hasNext(); ) {
                 Map.Entry<String, JsonNode> entry = it.next();
-                failedPages.put(Integer.parseInt(entry.getKey()), entry.getValue().asInt());
+                // Paragraphs without a known page still count toward the warning.
+                if (entry.getKey().matches("[0-9]+")) {
+                    failedPages.put(Integer.parseInt(entry.getKey()), entry.getValue().asInt());
+                }
             }
             return Optional.of(new ParagraphStats(
                     root.path("translated").asInt(), root.path("failed").asInt(), failedPages));
@@ -674,25 +662,13 @@ public class BabelDocService {
         }
     }
 
-    static boolean exceedsKeptSourceLimit(ParagraphStats paragraphs) {
-        return paragraphs.failed() > MAX_KEPT_SOURCE_PARAGRAPHS
-                || paragraphs.failed() * 100L > (long) MAX_KEPT_SOURCE_PERCENT * paragraphs.total();
-    }
-
-    /** User-facing note for a delivered document that kept a few source paragraphs, or null. */
+    /** User-facing advisory for a delivered document that kept source paragraphs, or null. */
     public static String keptSourceWarning(ParagraphStats paragraphs) {
         if (paragraphs == null || paragraphs.failed() <= 0) return null;
         String pages = paragraphs.failedPages().keySet().stream()
                 .map(String::valueOf).collect(Collectors.joining("、"));
         return (pages.isEmpty() ? "" : "第 " + pages + " 页")
                 + "有 " + paragraphs.failed() + " 段翻译失败，已保留原文";
-    }
-
-    private IllegalStateException keptSourceLimitExceeded(String fileName, ParagraphStats paragraphs) {
-        log.warn("翻译失败段落超过可交付上限: file={}, failed={}/{}, failedPages={}",
-                fileName, paragraphs.failed(), paragraphs.total(), paragraphs.failedPages());
-        return new IllegalStateException("有 " + paragraphs.failed() + " 段翻译失败，超过可交付上限（不超过 "
-                + MAX_KEPT_SOURCE_PARAGRAPHS + " 段且不超过 " + MAX_KEPT_SOURCE_PERCENT + "%），请重试");
     }
 
     private void writeChunkParagraphs(Path chunkDir, ParagraphStats paragraphs) throws IOException {
@@ -708,13 +684,6 @@ public class BabelDocService {
         } catch (IOException e) {
             log.warn("忽略损坏的分片段落统计: {}", file);
             return ParagraphStats.NONE;
-        }
-    }
-
-    private void deleteQuietly(Path path) {
-        try {
-            Files.deleteIfExists(path);
-        } catch (IOException ignored) {
         }
     }
 

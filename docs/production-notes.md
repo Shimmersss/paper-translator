@@ -104,14 +104,14 @@ If you run on a small host, keep the app guard below the systemd limits, keep so
   - Chunks cached before the fix have to be invalidated. Bumping the cache version did not do it, because the compatibility check ignores the `version=` line. A separate policy line (`references=titled-appendix-v1`) is used instead.
   - LaTeX-style lettered headings also end the references: "A. Contributions", "A.1 Training Details", or a lone "A" whose next line looks like a title ("A" / "Discussion: Selection Mechanism"). Only "A" counts, since it opens the first appendix. The title may not contain a comma, semicolon, year or "et al" and may not end with a period, so author lines like "A. Radford, J. W. Kim, …" stay in the bibliography. A lone "A" needs the title line because some PDFs extract references one word per line ("Mish: / A / self"). Run over 25 papers from a personal library, the rule ended the references only at real appendices (RT-2, Mamba, OpenVLA, LiLa-WAM). Cached chunks get a new policy line (`references=lettered-appendix-v1`). **In this repo, after v0.2.0.** The site has the same code but has not deployed it yet.
 
-### 6. Never deliver a half-translated PDF
+### 6. Retry incomplete answers and report kept-source paragraphs
 
 | Symptom | Change |
 | --- | --- |
-| BabelDOC swallowed provider errors, so the "translated" PDF was the original and the user was charged. | Any provider failure marks the run as incomplete, and no PDF is delivered (`fail_closed`). **In this repo.** |
+| BabelDOC swallowed provider errors, so the "translated" PDF was the original and the user was charged. | Record final paragraph failures and warn when the PDF keeps source text. Completeness is advisory and does not block delivery. **In this repo.** |
 | Some paragraphs came back empty or cut off. | Retry with larger output budgets (4096 → 8192 → 16384 tokens) before giving up. **In this repo.** |
 | The provider retired a model, and every request returned HTTP 400. | The settings page has a **Test connection** button, and `paper-translator doctor` checks the model before you wait on a real run. **In this repo.** |
-| A revoked or expired API key returns 401 on every page. | Thanks to `fail_closed`, the task ends as failed and is not delivered as a translation. Check the key with **Test connection**. |
+| A revoked or expired API key returns 401 on every page. | Paragraphs keep their source text with a warning if no retry succeeds. Check the key with **Test connection**. |
 
 ### 7. A reasoning model used its whole output budget on thinking
 
@@ -123,12 +123,12 @@ If you run on a small host, keep the app guard below the systemd limits, keep so
 
 - **Symptom:** a document failed even though every paragraph eventually translated.
 - **Cause:** BabelDOC sends paragraphs in JSON batches and falls back to one paragraph per request when a batch is rejected. The completeness check marked the document incomplete as soon as the batch was rejected, so a successful fallback did not help.
-- **Change:** only a failure on the final per-paragraph request marks the document incomplete. The runner's error message now includes the reason. **In this repo, after v0.2.0.**
+- **Change:** only a failure on the final per-paragraph request counts as a kept-source paragraph. Failed batch attempts that recover do not count. The report includes the reason. **In this repo, after v0.2.0.**
 
 ### 9. A few kept-source paragraphs should not fail a 30-page paper
 
 - **Symptom:** a long paper failed because a handful of paragraphs were still in English after every retry.
-- **Change:** tolerate at most 3 untranslated paragraphs and at most 2% of the document, as long as no page is entirely untranslated. The task then finishes with a warning that lists the affected pages, and per-chunk counts are written to `paragraphs.json`. Anything beyond that still fails, and only the chunks with failures are retranslated on retry. **In this repo, after v0.2.0.**
+- **Change:** completeness is advisory, with no maximum count or percentage of kept-source paragraphs. Entirely untranslated pages and failures without a known page do not reject a generated PDF. The task finishes with a warning listing known affected pages, and per-chunk counts are written to `paragraphs.json`. Process errors, timeouts and missing PDF files still fail normally. **In this repo, after v0.2.0.**
 
 ### 10. Temporary files from killed runs
 
