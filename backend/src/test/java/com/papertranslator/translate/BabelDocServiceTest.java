@@ -384,13 +384,13 @@ class BabelDocServiceTest {
     }
 
     @Test
-    void deliversAtMostThreeKeptSourceParagraphsAndTwoPercent() {
-        assertFalse(BabelDocService.exceedsKeptSourceLimit(BabelDocService.ParagraphStats.NONE));
-        assertFalse(BabelDocService.exceedsKeptSourceLimit(stats(147, 3, Map.of(5, 3))));
-        assertTrue(BabelDocService.exceedsKeptSourceLimit(stats(97, 3, Map.of(5, 3))));
-        assertTrue(BabelDocService.exceedsKeptSourceLimit(stats(400, 4, Map.of(5, 4))));
-        assertFalse(BabelDocService.exceedsKeptSourceLimit(stats(49, 1, Map.of(2, 1))));
-        assertTrue(BabelDocService.exceedsKeptSourceLimit(stats(48, 1, Map.of(2, 1))));
+    void preservesParagraphCountsWhenPageAttributionIsMissing() {
+        RecordingBabelDocService service = newService();
+        assertEquals(stats(0, 5, Map.of(2, 3)), service.parseParagraphs(
+                "{\"type\":\"paragraphs\",\"translated\":0,\"failed\":5,"
+                        + "\"failedPages\":{\"None\":2,\"2\":3}}").orElseThrow());
+        assertEquals("有 5 段翻译失败，已保留原文",
+                BabelDocService.keptSourceWarning(stats(0, 5, Map.of())));
     }
 
     @Test
@@ -421,30 +421,38 @@ class BabelDocServiceTest {
     }
 
     @Test
-    void failsAndDropsOnlyChunksWithKeptSourceWhenOverTheLimit() throws Exception {
+    void deliversChunksEvenWhenKeptSourceExceedsFormerLimits() throws Exception {
         RecordingBabelDocService service = newService();
-        service.paragraphs.put("1-4", stats(60, 2, Map.of(1, 2)));
+        service.paragraphs.put("1-4", stats(0, 60, Map.of(1, 60)));
         service.paragraphs.put("5-8", stats(60, 2, Map.of(7, 2)));
         Path resultDir = tempDir.resolve("result");
 
-        assertThrows(IllegalStateException.class, () -> service.translatePdf(
-                tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 1, 10, "auto", 2, ignored -> { }));
-        assertFalse(Files.exists(resultDir.resolve("translated.pdf")));
+        BabelDocService.TranslationResult result = service.translatePdf(
+                tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 1, 10, "auto", 2, ignored -> { });
 
-        service.paragraphs.clear();
-        service.translatePdf(tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 1, 10, "auto", 2, ignored -> { });
-        assertEquals(List.of("1-4@2", "5-8@2", "9-10@2", "1-4@2", "5-8@2"), service.calls);
+        assertTrue(Files.isRegularFile(result.translatedPdf()));
+        assertTrue(Files.isRegularFile(result.bilingualPdf()));
+        assertEquals(10, pageCount(result.translatedPdf()));
+        assertEquals(62, result.paragraphs().failed());
+        assertEquals("第 1、7 页有 62 段翻译失败，已保留原文",
+                BabelDocService.keptSourceWarning(result.paragraphs()));
+        assertEquals(List.of("1-4@2", "5-8@2", "9-10@2"), service.calls);
     }
 
     @Test
-    void rejectsASinglePageTaskOverTheLimit() {
+    void deliversAnEntirelyUntranslatedSinglePageWithWarning() throws Exception {
         RecordingBabelDocService service = newService();
-        service.paragraphs.put("3-3", stats(10, 1, Map.of(3, 1)));
+        service.paragraphs.put("3-3", stats(0, 10, Map.of(3, 10)));
         Path resultDir = tempDir.resolve("single");
 
-        assertThrows(IllegalStateException.class, () -> service.translatePdf(
-                tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 3, 3, "auto", 2, ignored -> { }));
-        assertFalse(Files.exists(resultDir.resolve("translated.pdf")));
+        BabelDocService.TranslationResult result = service.translatePdf(
+                tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 3, 3, "auto", 2, ignored -> { });
+
+        assertTrue(Files.isRegularFile(result.translatedPdf()));
+        assertTrue(Files.isRegularFile(result.bilingualPdf()));
+        assertEquals(1, pageCount(result.translatedPdf()));
+        assertEquals("第 3 页有 10 段翻译失败，已保留原文",
+                BabelDocService.keptSourceWarning(result.paragraphs()));
     }
 
     private static BabelDocService.ParagraphStats stats(int translated, int failed, Map<Integer, Integer> pages) {

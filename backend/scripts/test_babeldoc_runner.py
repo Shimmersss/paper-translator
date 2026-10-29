@@ -2,7 +2,10 @@ import hashlib
 import os
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from tokenizer_cache import O200K_CACHE_KEY, O200K_SHA256, configure_tokenizer_cache
 
@@ -194,6 +197,47 @@ class TokenizerCacheTest(unittest.TestCase):
                 os.environ.pop("TIKTOKEN_CACHE_DIR", None)
             else:
                 os.environ["TIKTOKEN_CACHE_DIR"] = previous
+
+
+class RunnerDeliveryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_completion_emits_finish_for_untranslated_or_unattributed_paragraphs(self):
+        import babeldoc_runner as runner
+        from translation_completion import ParagraphOutcomes
+
+        for known_page in (True, False):
+            with self.subTest(known_page=known_page):
+                outcomes, paragraph = ParagraphOutcomes(), object()
+                if known_page:
+                    outcomes.map_document([(3, [paragraph])])
+                with outcomes.attempt(paragraph):
+                    outcomes.record_failure(RuntimeError("provider unavailable"))
+
+                async def events(config):
+                    yield {"type": "finish"}
+
+                emit = Mock()
+                args = SimpleNamespace(input="input.pdf", output="output", pages="3",
+                                       model="test", base_url="http://unused", api_key="test",
+                                       qps=1, font_family="auto", force_reference_section=False)
+                with ExitStack() as stack:
+                    for name, replacement in {
+                        "prepare_pdf_text": Mock(return_value=(Path("input.pdf"), [], True)),
+                        "install_reference_layout_patches": Mock(),
+                        "install_paragraph_tracking": Mock(),
+                        "set_translate_rate_limiter": Mock(),
+                        "RepairingOpenAITranslator": Mock(return_value=SimpleNamespace(outcomes=outcomes)),
+                        "TranslationConfig": Mock(return_value=SimpleNamespace()),
+                        "emit": emit,
+                    }.items():
+                        stack.enter_context(patch.object(runner, name, replacement))
+                    stack.enter_context(patch.object(runner.high_level, "init"))
+                    stack.enter_context(patch.object(runner.high_level, "async_translate", events))
+                    stack.enter_context(patch.object(runner.DocLayoutModel, "load_onnx",
+                                                    return_value=SimpleNamespace()))
+                    await runner.run(args)
+                self.assertEqual("paragraphs", emit.call_args_list[-2].args[0]["type"])
+                self.assertEqual(1, emit.call_args_list[-2].args[0]["failed"])
+                self.assertEqual({"type": "finish"}, emit.call_args_list[-1].args[0])
 
 
 if __name__ == "__main__":

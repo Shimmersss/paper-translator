@@ -90,6 +90,28 @@ class TranslationCompletionTest(unittest.TestCase):
         outcomes.record_failure(RuntimeError("boom"))
         self.assertEqual(1, outcomes.summary()["unattributed"])
 
+    def test_entirely_untranslated_page_is_reported_without_raising(self):
+        outcomes, para = ParagraphOutcomes(), object()
+        outcomes.map_document([(5, [para])])
+        with outcomes.attempt(para):
+            outcomes.record_failure(RuntimeError("provider unavailable"))
+        with self.assertLogs("translation_completion", level="WARNING"):
+            summary = outcomes.report()
+        self.assertEqual((0, 1, [5]),
+                         (summary["translated"], summary["failed"], summary["untranslatedPages"]))
+
+    def test_unattributed_failure_is_advisory(self):
+        outcomes = ParagraphOutcomes()
+        outcomes.record_failure(RuntimeError("provider unavailable"))
+        with self.assertLogs("translation_completion", level="WARNING"):
+            self.assertEqual(1, outcomes.report()["unattributed"])
+
+    def test_successful_report_does_not_warn(self):
+        outcomes, para = ParagraphOutcomes(), object()
+        outcomes.record_translated(para)
+        with self.assertNoLogs("translation_completion", level="WARNING"):
+            self.assertEqual(1, outcomes.report()["translated"])
+
     def test_attempt_restores_previous_paragraph(self):
         outcomes, outer, inner = ParagraphOutcomes(), object(), object()
         outcomes.map_document([(2, [outer, inner])])
