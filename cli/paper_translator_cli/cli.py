@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__, service, system, ui
+from . import __version__, mirrors, service, system, ui
 from .paths import Home, Layout, home_dir, read_env_file, restrict_to_owner, update_env_file
 from .releases import install_release, latest_release, version_tuple
 
@@ -23,6 +23,8 @@ def cmd_setup(args, home: Home) -> int:
     interactive = ui.INTERACTIVE and not args.non_interactive
     home.path.mkdir(parents=True, exist_ok=True)
     config = home.load()
+    use_mirror = choose_mirror(args, config)
+    home.save(config)
 
     ui.step("应用文件")
     if args.from_source:
@@ -55,7 +57,7 @@ def cmd_setup(args, home: Home) -> int:
         if interactive and not ui.confirm("没有找到 JDK 17+，现在安装？"):
             ui.fail("需要 JDK 17 或更高版本：" + system.java_install_hint())
             return 1
-        java = system.install_java(home.jdk_dir, interactive)
+        java = system.install_java(home.jdk_dir, interactive, use_mirror)
         if not java:
             ui.fail("JDK 安装失败：" + system.java_install_hint())
             return 1
@@ -81,7 +83,7 @@ def cmd_setup(args, home: Home) -> int:
 
     if layout.mode == "source":
         ui.step("构建（源码模式）")
-        if build_source(layout, java[0]) != 0:
+        if build_source(layout, java[0], use_mirror) != 0:
             return 1
 
     ui.step("配置文件")
@@ -89,7 +91,8 @@ def cmd_setup(args, home: Home) -> int:
 
     if not args.skip_warmup:
         ui.step("预下载 BabelDOC 和版面模型（首次约需几分钟）")
-        result = system.run([system.uv_path(), "run", *system.BABELDOC_WITH, "babeldoc", "--warmup"], check=False)
+        result = system.run([system.uv_path(), "run", *system.BABELDOC_WITH, "babeldoc", "--warmup"], check=False,
+                            env=dict(os.environ, **mirrors.uv_env(use_mirror)))
         (ui.ok("完成") if result.returncode == 0 else ui.warn("预下载失败，首次翻译时会再试"))
 
     print()
@@ -97,13 +100,29 @@ def cmd_setup(args, home: Home) -> int:
     return 0
 
 
-def build_source(layout: Layout, java: str) -> int:
+def choose_mirror(args, config: dict) -> bool:
+    """Settles the download source for this run and remembers it in config.json."""
+    mode = getattr(args, "mirror", None) or mirrors.requested(config)
+    if mode == "auto":
+        ui.step("检测下载源")
+        mode = mirrors.resolve(mode)
+        (ui.ok("GitHub 可以访问，使用官方下载源") if mode == "off"
+         else ui.ok("GitHub 无法访问，改用国内镜像（阿里云 PyPI、npmmirror、清华/南大 JDK）"))
+    elif mode == "cn":
+        ui.ok("使用国内镜像下载（阿里云 PyPI、npmmirror、清华/南大 JDK）")
+    config["mirror"] = mode
+    return mode == "cn"
+
+
+def build_source(layout: Layout, java: str, use_mirror: bool = False) -> int:
     mvn, npm = system.maven(), system.npm()
     missing = [name for name, path in (("Maven", mvn), ("Node.js / npm", npm)) if not path]
     if missing:
         ui.fail("源码构建需要 " + "、".join(missing) + "；发布版安装不需要它们")
         return 1
     env = dict(os.environ, JAVA_HOME=system.java_home(java))
+    if use_mirror:
+        ui.detail("源码构建仍从 Maven Central 和 npm 官方源下载依赖；需要时请自行配置 Maven/npm 镜像")
     if system.run([mvn, "-q", "-B", "-DskipTests", "package"], check=False,
                   cwd=str(layout.root / "backend"), env=env).returncode != 0:
         ui.fail("后端构建失败")
@@ -212,6 +231,8 @@ def cmd_doctor(args, home: Home) -> int:
         bad("还没有安装", "paper-translator setup")
         return 1
     good(f"程序 {layout.version()}（{layout.mode}）：{layout.root}")
+    ui.ok("下载源：" + ("国内镜像" if mirrors.enabled(home.load()) else "官方（GitHub / PyPI）")
+          + "（切换：paper-translator setup --mirror cn|off|auto）")
     for label, path, fix in (("后端", layout.jar, "paper-translator setup"),
                              ("前端", layout.dist / "index.html", "paper-translator setup"),
                              ("BabelDOC 脚本", layout.scripts / "babeldoc_runner.py", "paper-translator update")):
@@ -276,13 +297,16 @@ def cmd_update(args, home: Home) -> int:
     if not layout:
         return 1
     was_running = service.running(home) is not None
+    config = home.load()
+    use_mirror = choose_mirror(args, config)
+    home.save(config)
     if layout.mode == "source":
         ui.step(f"更新源码 {layout.root}")
         if system.run(["git", "-C", str(layout.root), "pull", "--ff-only"], check=False).returncode != 0:
             ui.fail("git pull 失败，请手动处理后重试")
             return 1
         java = system.find_java(home.jdk_dir)
-        if not java or build_source(layout, java[0]) != 0:
+        if not java or build_source(layout, java[0], use_mirror) != 0:
             return 1
     else:
         release = latest_release()
@@ -297,17 +321,18 @@ def cmd_update(args, home: Home) -> int:
             service.stop(home)
         install_release(home.app_dir, release)
         ui.ok(f"已更新到 {latest}（.env、settings.json 和数据目录保留不变）")
-        reinstall_cli(home.app_dir / "cli")
+        reinstall_cli(home.app_dir / "cli", use_mirror)
     if was_running:
         service.stop(home)
         return service.start(home, home.layout(), home.port(), open_browser=False)
     return 0
 
 
-def reinstall_cli(cli_dir: Path) -> None:
+def reinstall_cli(cli_dir: Path, use_mirror: bool = False) -> None:
     uv = system.uv_path()
     if uv and cli_dir.is_dir():
-        system.run([uv, "tool", "install", "--force", str(cli_dir)], check=False)
+        system.run([uv, "tool", "install", "--force", str(cli_dir)], check=False,
+                   env=dict(os.environ, **mirrors.uv_env(use_mirror)))
 
 
 def cmd_uninstall(args, home: Home) -> int:
@@ -350,6 +375,7 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--port", type=int, help="服务端口（默认 8080）")
     setup.add_argument("--install-tesseract", action="store_true", help="同时安装 Tesseract")
     setup.add_argument("--skip-warmup", action="store_true", help="跳过预下载 BabelDOC 与模型")
+    setup.add_argument("--mirror", choices=mirrors.MODES, help="下载源：auto 自动检测（默认），cn 国内镜像，off 官方源")
 
     start = commands.add_parser("start", help="后台启动服务并打开浏览器")
     start.add_argument("--port", type=int)
@@ -364,6 +390,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="逐项检查环境并给出修复命令")
     update = commands.add_parser("update", help="更新到最新版本，保留配置和数据")
     update.add_argument("--force", action="store_true", help="即使版本相同也重新安装")
+    update.add_argument("--mirror", choices=mirrors.MODES, help="下载源：auto 自动检测（默认），cn 国内镜像，off 官方源")
     uninstall = commands.add_parser("uninstall", help="删除程序")
     uninstall.add_argument("-y", "--yes", action="store_true")
     uninstall.add_argument("--keep-data", action="store_true")

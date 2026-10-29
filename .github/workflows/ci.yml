@@ -104,3 +104,33 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
           if ($errors) { $errors; exit 1 }
           & .\install.ps1 --non-interactive --from-source --source-dir "$env:GITHUB_WORKSPACE" --skip-warmup
+
+      # Mainland China mode: uv comes out of its wheel on the Aliyun PyPI mirror and the
+      # command is installed with the mirror index. uv is hidden from PATH so the
+      # bootstrap really runs; `setup --help` must then offer --mirror.
+      - name: Installer in mirror mode (install.sh)
+        if: runner.os != 'Windows'
+        run: |
+          home="$RUNNER_TEMP/mirror-home"
+          mkdir -p "$home"
+          env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            PAPER_TRANSLATOR_MIRROR=cn PAPER_TRANSLATOR_REF="$GITHUB_SHA" \
+            sh install.sh --help > "$RUNNER_TEMP/mirror.log" 2>&1 || { cat "$RUNNER_TEMP/mirror.log"; exit 1; }
+          cat "$RUNNER_TEMP/mirror.log"
+          test -x "$home/.local/bin/uv"
+          grep -q -- "--mirror" "$RUNNER_TEMP/mirror.log"
+
+      - name: Installer in mirror mode (install.ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'mirror-home'
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'uv.exe')) }) -join ';'
+          if (Get-Command uv -ErrorAction SilentlyContinue) { throw 'uv is still on PATH' }
+          $env:PAPER_TRANSLATOR_MIRROR = 'cn'
+          $env:PAPER_TRANSLATOR_REF = $env:GITHUB_SHA
+          $log = & .\install.ps1 --help 2>&1 | Out-String
+          $log
+          if (-not (Test-Path (Join-Path $env:USERPROFILE '.local\bin\uv.exe'))) { throw 'uv was not installed from the mirror' }
+          if ($log -notmatch '--mirror') { throw 'setup does not offer --mirror' }

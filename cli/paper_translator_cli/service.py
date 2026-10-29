@@ -15,7 +15,7 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
-from . import ui
+from . import mirrors, ui
 from .paths import Home, Layout
 from .system import BABELDOC_WITH, find_java, os_name, uv_path
 
@@ -37,6 +37,8 @@ def backend_command(home: Home, layout: Layout, java: str, port: int):
         "BABELDOC_RUNNER_SCRIPT": str(layout.scripts / "babeldoc_runner.py"),
         "BABELDOC_COMMAND": " ".join([_quote(uv), "run", *BABELDOC_WITH, "python"]),
     })
+    # BabelDOC is fetched by `uv run` on first use; keep using the mirror chosen at setup.
+    env.update(mirrors.uv_env(mirrors.enabled(home.load()), env))
     command = [java, "-jar", str(layout.jar),
                f"--spring.config.import=optional:file:{home.env_file.as_posix()}[.properties]"]
     return command, env

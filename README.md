@@ -39,6 +39,14 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.ps1 | iex
 ```
 
+From mainland China, where PyPI, Python and JDK downloads are slow, turn on the domestic mirrors (the [Chinese README](README.zh-CN.md) lists what each mirror covers; the release itself still comes from GitHub):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.sh | PAPER_TRANSLATOR_MIRROR=cn sh
+```
+
+Without `PAPER_TRANSLATOR_MIRROR` the installer switches to the mirrors on its own only when it cannot reach GitHub. Change the choice later with `paper-translator setup --mirror cn|off|auto`.
+
 The installer sets up [uv](https://docs.astral.sh/uv/), installs the `paper-translator` command from the latest GitHub release and runs `paper-translator setup`. Setup then:
 
 - downloads the release archive and checks it against `SHA256SUMS.txt`;
@@ -59,7 +67,7 @@ This starts the service in the background and opens <http://127.0.0.1:8080>.
 
 | Command | What it does |
 | --- | --- |
-| `paper-translator setup` | Install dependencies, configure, download models. `--from-source` builds a source checkout instead; `--archive FILE` installs an offline archive |
+| `paper-translator setup` | Install dependencies, configure, download models. `--from-source` builds a source checkout instead; `--archive FILE` installs an offline archive; `--mirror cn\|off\|auto` picks the download source |
 | `paper-translator start` / `stop` / `status` | Run in the background, stop, show state (`start --port 9000`, `--no-browser`) |
 | `paper-translator update` | Install the latest release; `.env`, `settings.json` and your data are kept |
 | `paper-translator doctor` | Check JDK, uv, Tesseract, the port and model connectivity, with fix commands |

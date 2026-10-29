@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from paper_translator_cli import archive, paths, releases, service  # noqa: E402
+from paper_translator_cli import archive, mirrors, paths, releases, service, system  # noqa: E402
 
 
 class EnvFileTest(unittest.TestCase):
@@ -137,6 +137,80 @@ class ServiceTest(unittest.TestCase):
             if sys.platform != "win32":
                 self.assertIn("--foreground", spec["content"])
                 self.assertIn(str(home.path), spec["content"])
+
+
+
+
+class MirrorTest(unittest.TestCase):
+    def test_mode_comes_from_env_then_config_then_auto(self):
+        with mock.patch.dict(os.environ, {"PAPER_TRANSLATOR_MIRROR": "CN"}):
+            self.assertEqual("cn", mirrors.requested({"mirror": "off"}))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual("off", mirrors.requested({"mirror": "off"}))
+            self.assertEqual("auto", mirrors.requested({}))
+            self.assertEqual("auto", mirrors.requested({"mirror": "nonsense"}))
+            self.assertTrue(mirrors.enabled({"mirror": "cn"}))
+            self.assertFalse(mirrors.enabled({"mirror": "auto"}))
+
+    def test_auto_uses_mirrors_only_when_github_is_unreachable(self):
+        with mock.patch.object(mirrors, "github_reachable", return_value=True):
+            self.assertEqual("off", mirrors.resolve("auto"))
+        with mock.patch.object(mirrors, "github_reachable", return_value=False):
+            self.assertEqual("cn", mirrors.resolve("auto"))
+            self.assertEqual("off", mirrors.resolve("off"))
+
+    def test_uv_env_keeps_a_users_own_index(self):
+        self.assertEqual({}, mirrors.uv_env(False, {}))
+        self.assertEqual({"UV_DEFAULT_INDEX": mirrors.PYPI_INDEX,
+                          "UV_PYTHON_INSTALL_MIRROR": mirrors.PYTHON_INSTALL_MIRROR}, mirrors.uv_env(True, {}))
+        mine = mirrors.uv_env(True, {"UV_INDEX_URL": "https://pypi.example/simple",
+                                     "UV_PYTHON_INSTALL_MIRROR": "https://py.example"})
+        self.assertEqual({}, mine)
+
+    def test_jdk_mirror_urls_follow_the_adoptium_layout(self):
+        self.assertEqual(
+            ["https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/aarch64/mac/OpenJDK21U-jdk.tar.gz",
+             "https://mirror.nju.edu.cn/adoptium/21/jdk/aarch64/mac/OpenJDK21U-jdk.tar.gz"],
+            mirrors.jdk_urls(21, "aarch64", "mac", "OpenJDK21U-jdk.tar.gz"))
+
+    def test_portable_jdk_tries_mirrors_then_the_original_link(self):
+        payload = b"jdk-bytes"
+        listing = [{"binary": {"package": {
+            "name": "jdk.tar.gz", "link": "https://github.example/jdk.tar.gz",
+            "checksum": __import__("hashlib").sha256(payload).hexdigest()}}}]
+        tried = []
+
+        def fake_download(url, target):
+            tried.append(url)
+            if url.endswith("assets/latest/21/hotspot") or "api.adoptium.net" in url:
+                Path(target).write_text(__import__("json").dumps(listing), encoding="utf-8")
+            elif "tuna" in url:
+                raise OSError("404")
+            elif "nju" in url:
+                Path(target).write_bytes(b"wrong")
+            else:
+                Path(target).write_bytes(payload)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(system, "download", side_effect=fake_download), \
+                mock.patch.object(system, "extract_archive"):
+            system.install_portable_jdk(Path(tmp) / "jdk", use_mirror=True)
+        self.assertIn("tuna", tried[1])
+        self.assertIn("nju", tried[2])
+        self.assertEqual("https://github.example/jdk.tar.gz", tried[3])
+
+    def test_service_passes_the_mirror_to_uv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = paths.Home(Path(tmp))
+            home.save({"mirror": "cn"})
+            layout = paths.Layout(Path(tmp) / "app", "release")
+            with mock.patch.object(service, "uv_path", return_value="uv"), mock.patch.dict(os.environ, {}, clear=True):
+                _, env = service.backend_command(home, layout, "java", 8080)
+            self.assertEqual(mirrors.PYPI_INDEX, env["UV_DEFAULT_INDEX"])
+            home.save({"mirror": "off"})
+            with mock.patch.object(service, "uv_path", return_value="uv"), mock.patch.dict(os.environ, {}, clear=True):
+                _, env = service.backend_command(home, layout, "java", 8080)
+            self.assertNotIn("UV_DEFAULT_INDEX", env)
 
 
 if __name__ == "__main__":

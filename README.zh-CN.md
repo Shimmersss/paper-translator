@@ -25,22 +25,51 @@
 
 ### 一条命令安装（macOS、Linux、Windows）
 
+以下命令默认使用国内镜像下载 Python、依赖包和 JDK，适合中国大陆网络。
+
 macOS / Linux：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.sh | PAPER_TRANSLATOR_MIRROR=cn sh
 ```
 
 Windows（PowerShell）：
 
 ```powershell
+$env:PAPER_TRANSLATOR_MIRROR='cn'; irm https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.ps1 | iex
+```
+
+镜像模式下的下载来源：
+
+| 内容 | 来源 |
+| --- | --- |
+| 发布包与 `paper-translator` 命令 | GitHub Release（约 25 MB，不走镜像） |
+| uv | 阿里云 PyPI 镜像上的 uv wheel |
+| Python 依赖（BabelDOC 等） | 阿里云 PyPI 镜像 |
+| Python 解释器 | npmmirror 的 python-build-standalone 镜像 |
+| JDK | 清华 / 南京大学的 Adoptium 镜像（macOS、Windows 不走 Homebrew / winget） |
+| BabelDOC 版面模型与字体 | BabelDOC 会在 GitHub、Hugging Face、ModelScope 中自动选择最快的源，国内一般会选 ModelScope |
+
+所有文件仍按官方发布的 SHA-256 校验；镜像缺少某个文件时自动回退到官方源。如果你已经设置了 `UV_DEFAULT_INDEX` 等 uv 镜像变量，安装程序会沿用你的设置。选择会保存下来，之后的 `paper-translator update` 和翻译时下载 BabelDOC 也使用同一来源；用 `paper-translator setup --mirror cn|off|auto` 可以切换。
+
+#### 海外网络（不用镜像）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.sh | sh
+```
+
+```powershell
 irm https://raw.githubusercontent.com/Shimmersss/paper-translator/main/install.ps1 | iex
 ```
 
-安装脚本会装好 [uv](https://docs.astral.sh/uv/)，从最新的 GitHub Release 安装 `paper-translator` 命令，然后运行 `paper-translator setup`。setup 会：
+不设置 `PAPER_TRANSLATOR_MIRROR` 时，安装脚本会先检查能否访问 GitHub，访问不了才使用镜像。
+
+#### 安装过程
+
+安装脚本会装好 [uv](https://docs.astral.sh/uv/)，从最新发布版安装 `paper-translator` 命令，然后运行 `paper-translator setup`。setup 会：
 
 - 下载发布包，并用 `SHA256SUMS.txt` 校验；
-- 使用已有的 JDK 17+，没有时安装 JDK 21（macOS 用 Homebrew，Windows 用 winget，Linux 在可用 sudo 时用 apt/dnf，否则把便携版 Temurin 下载到安装目录，不需要管理员权限）；
+- 使用已有的 JDK 17+，没有时安装 JDK 21（镜像模式下 macOS、Windows 直接下载便携版；官方源模式下 macOS 用 Homebrew，Windows 用 winget；Linux 在可用 sudo 时用 apt/dnf；以上都不可用时把便携版 Temurin 下载到安装目录，不需要管理员权限）；
 - 询问是否安装 Tesseract（扫描版 PDF 需要）；
 - 询问模型接口（可以跳过，之后在设置页填写）；
 - 提前下载 BabelDOC 和版面模型，首次翻译不用再等。
@@ -57,7 +86,7 @@ paper-translator start
 
 | 命令 | 作用 |
 | --- | --- |
-| `paper-translator setup` | 安装依赖、配置并预下载模型。`--from-source` 改为构建源码目录；`--archive 文件` 离线安装 |
+| `paper-translator setup` | 安装依赖、配置并预下载模型。`--from-source` 改为构建源码目录；`--archive 文件` 离线安装；`--mirror cn\|off\|auto` 选择下载源 |
 | `paper-translator start` / `stop` / `status` | 后台启动、停止、查看状态（`start --port 9000`、`--no-browser`） |
 | `paper-translator update` | 安装最新版本，保留 `.env`、`settings.json` 和数据 |
 | `paper-translator doctor` | 逐项检查 JDK、uv、Tesseract、端口和模型连接，并给出修复命令 |

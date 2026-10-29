@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import ui
+from . import mirrors, ui
 from .archive import download, extract_archive
 
 JAVA_FEATURE = 21
@@ -97,9 +97,17 @@ def java_home(java: str) -> str:
     return str(Path(java).resolve().parent.parent)
 
 
-def install_java(jdk_dir: Path, interactive: bool) -> Optional[Tuple[str, int]]:
-    """Package manager first (no admin needed for Homebrew/winget); otherwise a portable Temurin JDK."""
+def install_java(jdk_dir: Path, interactive: bool, use_mirror: bool = False) -> Optional[Tuple[str, int]]:
+    """Package manager first (no admin needed for Homebrew/winget); otherwise a portable Temurin JDK.
+
+    With the mainland mirror on, Homebrew bottles and winget packages still come from
+    overseas, so macOS and Windows go straight to the portable JDK from TUNA/NJU.
+    """
     system = os_name()
+    if use_mirror and system in ("mac", "windows"):
+        ui.step(f"从国内镜像下载便携版 Temurin JDK {JAVA_FEATURE} 到 {jdk_dir}（不需要管理员权限）")
+        install_portable_jdk(jdk_dir, use_mirror=True)
+        return find_java(jdk_dir)
     if system == "mac" and which("brew"):
         if not interactive or ui.confirm(f"用 Homebrew 安装 openjdk@{JAVA_FEATURE}？"):
             if run(["brew", "install", f"openjdk@{JAVA_FEATURE}"], check=False).returncode == 0:
@@ -126,7 +134,7 @@ def install_java(jdk_dir: Path, interactive: bool) -> Optional[Tuple[str, int]]:
                 if found:
                     return found
     ui.step(f"下载便携版 Temurin JDK {JAVA_FEATURE} 到 {jdk_dir}（不需要管理员权限）")
-    install_portable_jdk(jdk_dir)
+    install_portable_jdk(jdk_dir, use_mirror)
     return find_java(jdk_dir)
 
 
@@ -137,7 +145,7 @@ def _can_sudo() -> bool:
         ["sudo", "-n", "true"], capture_output=True).returncode == 0
 
 
-def install_portable_jdk(jdk_dir: Path) -> None:
+def install_portable_jdk(jdk_dir: Path, use_mirror: bool = False) -> None:
     system = {"mac": "mac", "linux": "linux", "windows": "windows"}[os_name()]
     api = (f"https://api.adoptium.net/v3/assets/latest/{JAVA_FEATURE}/hotspot"
            f"?os={system}&architecture={arch()}&image_type=jdk&vendor=eclipse")
@@ -149,10 +157,22 @@ def install_portable_jdk(jdk_dir: Path) -> None:
             raise RuntimeError(f"Adoptium 没有 {system}/{arch()} 的 JDK {JAVA_FEATURE}")
         package = assets[0]["binary"]["package"]
         archive = Path(tmp) / package["name"]
-        download(package["link"], archive)
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        if digest != package["checksum"]:
-            raise RuntimeError("JDK 下载校验失败")
+        # The API is small and reachable from China; the binary itself lives on GitHub.
+        urls = mirrors.jdk_urls(JAVA_FEATURE, arch(), system, package["name"]) if use_mirror else []
+        urls.append(package["link"])
+        for index, url in enumerate(urls):
+            try:
+                download(url, archive)
+            except OSError as error:
+                if index == len(urls) - 1:
+                    raise
+                ui.detail(f"{url} 不可用（{error}），换下一个下载源")
+                continue
+            if hashlib.sha256(archive.read_bytes()).hexdigest() == package["checksum"]:
+                break
+            if index == len(urls) - 1:
+                raise RuntimeError("JDK 下载校验失败")
+            ui.detail(f"{url} 的文件校验不一致，换下一个下载源")
         if jdk_dir.exists():
             shutil.rmtree(jdk_dir)
         extract_archive(archive, jdk_dir, strip_top_level=True)
