@@ -26,10 +26,17 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -46,10 +53,16 @@ public class BabelDocService {
     private static final String COMPLETION_POLICY = "completion=complete-v1";
     // isCompatibleChunkManifest ignores the version line so compatible legacy
     // chunks survive upgrades; output-changing fixes add a policy line instead.
-    // Chunks cached before titled appendix headings ("GraspGen-X: Supplementary
-    // Material") were recognised may hold untranslated appendices.
-    private static final String REFERENCE_POLICY = "references=titled-appendix-v1";
+    // Chunks cached before titled ("GraspGen-X: Supplementary Material") and
+    // lettered ("A. Contributions") appendix headings were recognised may hold
+    // untranslated appendices.
+    private static final String REFERENCE_POLICY = "references=lettered-appendix-v1";
     private static final Pattern CHUNK_RANGE = Pattern.compile("^(\\d+)-(\\d+)$");
+    // A document may be delivered with at most this many paragraphs left in the
+    // source language (BabelDOC keeps the original text when a paragraph fails).
+    static final int MAX_KEPT_SOURCE_PARAGRAPHS = 3;
+    static final int MAX_KEPT_SOURCE_PERCENT = 2;
+    private static final String CHUNK_PARAGRAPHS_FILE = "paragraphs.json";
     private static final Pattern REFERENCE_HEADING = Pattern.compile(
             "\\s*(?:references|bibliography|works\\s+cited|literature\\s+cited)\\s*",
             Pattern.CASE_INSENSITIVE);
@@ -58,14 +71,24 @@ public class BabelDocService {
     // only keywords are case-insensitive so prose like "Appendix is" is ignored.
     // A short title prefix ("GraspGen-X: Supplementary Material") is allowed when
     // it has no period and does not start like a numbered reference entry.
+    // LaTeX's \appendix numbers appendices with a bare letter ("A. Contributions",
+    // "A.1 Training Details"); only "A" counts, and its title may not contain a
+    // comma, semicolon, ". ", a year or "et al" or end with a period, so author
+    // lines such as "A. Radford, J. W. Kim, ..." stay in the bibliography.
+    private static final String APPENDIX_TITLE =
+            "[A-Z](?:(?!\\.\\s|[,;]|\\b(?:18|19|20)\\d{2}\\b|\\bet\\s+al\\b).){0,60}(?<![.,;])";
     private static final Pattern REFERENCE_SECTION_END = Pattern.compile(
-            "\\s*(?:(?![\\[(\\d])[^.:\\uff1a\\n]{1,80}[:\\uff1a]\\s*)?(?:(?:[A-Z]|\\d{1,2}(?:\\.\\d{1,2})*)[.)]?\\s+)?(?:"
+            "\\s*(?:(?:(?![\\[(\\d])[^.:\\uff1a\\n]{1,80}[:\\uff1a]\\s*)?(?:(?:[A-Z]|\\d{1,2}(?:\\.\\d{1,2})*)[.)]?\\s+)?(?:"
                     + "(?i:appendix|appendices)(?:\\s+(?:[A-Z]|[IVX]{1,4}|\\d{1,2})(?:\\.\\d{1,2})*)?"
                     + "(?:\\s*[.:\\uff1a\\u2014\\u2013-]\\s*\\S.*|\\s+[A-Z(].*)?"
                     + "|(?:(?i:supplementary|supplemental|supporting)\\s+(?i:materials?|information|data)"
                     + "|(?i:online\\s+)?(?i:methods)|(?i:extended\\s+data)"
                     + "|(?i:acknowledge?ments?)|(?i:author\\s+contributions))\\s*[.:\\uff1a]?"
-                    + ")\\s*");
+                    + ")|A(?:\\.\\d{1,2})*\\.?\\s+" + APPENDIX_TITLE + ")\\s*");
+    // A lone "A" is also a word of a reference split one word per line, so it
+    // ends the bibliography only before a title-like line.
+    private static final Pattern BARE_APPENDIX_LETTER = Pattern.compile("\\s*A\\.?\\s*");
+    private static final Pattern APPENDIX_TITLE_LINE = Pattern.compile("\\s*" + APPENDIX_TITLE + "\\s*");
 
     private final BabelDocConfig config;
     private final ProviderSettings providers;
@@ -125,10 +148,16 @@ public class BabelDocService {
         }
         int chunkSize = Math.max(1, Math.min(tuning.pagesPerChunk(), maxPagesPerChunk));
         if (totalPages <= chunkSize) {
-            return translateRange(inputPdf, resultDir, fileName, startPage, endPage,
+            TranslationResult result = translateRange(inputPdf, resultDir, fileName, startPage, endPage,
                     fontFamily, firstPendingQps,
                     isReferenceSectionActiveBefore(inputPdf, startPage),
                     progressConsumer);
+            if (exceedsKeptSourceLimit(result.paragraphs())) {
+                deleteQuietly(result.translatedPdf());
+                deleteQuietly(result.bilingualPdf());
+                throw keptSourceLimitExceeded(fileName, result.paragraphs());
+            }
+            return result;
         }
 
         Path chunkCacheBase = resultDir.resolve(".babeldoc-chunks");
@@ -141,6 +170,7 @@ public class BabelDocService {
         int totalChunks = (totalPages + chunkSize - 1) / chunkSize;
         int completedPages = 0;
         boolean processedPendingChunk = false;
+        Map<Path, ParagraphStats> chunkParagraphs = new LinkedHashMap<>();
         try {
             prepareChunkRoot(chunkRoot, inputPdf, fontFamily);
             importCompatibleLegacyChunks(chunkCacheBase, chunkRoot, inputPdf, fontFamily);
@@ -175,8 +205,9 @@ public class BabelDocService {
                     int chunkQps = processedPendingChunk ? followingQps : firstPendingQps;
                     log.info("启动 BabelDOC 分片: file={}, chunk={}/{}, pages={}-{}, qps={}",
                             fileName, chunkIndex + 1, totalChunks, chunkStart, chunkEnd, chunkQps);
+                    TranslationResult chunkResult;
                     try {
-                        translateRange(inputPdf, chunkDir, fileName, chunkStart, chunkEnd,
+                        chunkResult = translateRange(inputPdf, chunkDir, fileName, chunkStart, chunkEnd,
                                 fontFamily, chunkQps,
                                 isReferenceSectionActiveBefore(inputPdf, chunkStart), chunkProgress);
                     } catch (ResourcePressureException pressure) {
@@ -186,12 +217,14 @@ public class BabelDocService {
                         throw new IllegalStateException("BabelDOC 分片结果不完整: "
                                 + chunkStart + "-" + chunkEnd);
                     }
+                    writeChunkParagraphs(chunkDir, chunkResult.paragraphs());
                     processedPendingChunk = true;
                 } else {
                     log.info("复用已完成 BabelDOC 分片: file={}, pages={}-{}",
                             fileName, chunkStart, chunkEnd);
                 }
 
+                chunkParagraphs.put(chunkDir, readChunkParagraphs(chunkDir));
                 translatedParts.add(translatedPart);
                 bilingualParts.add(bilingualPart);
                 completedPages += chunkPages;
@@ -200,6 +233,15 @@ public class BabelDocService {
                         "chunk-completed", chunkIndex + 1, totalChunks);
             }
 
+            ParagraphStats paragraphs = chunkParagraphs.values().stream()
+                    .reduce(ParagraphStats.NONE, ParagraphStats::plus);
+            if (exceedsKeptSourceLimit(paragraphs)) {
+                // Retranslate only the chunks that kept source text on the next attempt.
+                chunkParagraphs.forEach((dir, stats) -> {
+                    if (stats.failed() > 0) deleteRecursively(dir);
+                });
+                throw keptSourceLimitExceeded(fileName, paragraphs);
+            }
             emitProgress(progressConsumer, 99.0, "merge", totalChunks, totalChunks);
             Files.createDirectories(resultDir);
             Path translatedResult = resultDir.resolve("translated.pdf");
@@ -209,7 +251,7 @@ public class BabelDocService {
             deleteRecursively(chunkRoot);
             log.info("BabelDOC 分片合并完成: file={}, pages={}-{}, chunks={}",
                     fileName, startPage, endPage, totalChunks);
-            return new TranslationResult(translatedResult, bilingualResult);
+            return new TranslationResult(translatedResult, bilingualResult, paragraphs);
         } catch (IllegalStateException e) {
             // Keep completed chunks so a resource-pressure downgrade or service restart
             // resumes at the failed range instead of translating earlier pages again.
@@ -244,7 +286,9 @@ public class BabelDocService {
             process = processBuilder.start();
             Process runningProcess = process;
             StringBuilder output = new StringBuilder();
-            Thread outputReader = new Thread(() -> readOutput(runningProcess, output, progressConsumer), "babeldoc-output-reader");
+            AtomicReference<ParagraphStats> paragraphs = new AtomicReference<>(ParagraphStats.NONE);
+            Thread outputReader = new Thread(() -> readOutput(runningProcess, output, progressConsumer, paragraphs),
+                    "babeldoc-output-reader");
             outputReader.setDaemon(true);
             outputReader.start();
 
@@ -267,9 +311,10 @@ public class BabelDocService {
             Path bilingualResult = resultDir.resolve("bilingual.pdf");
             Files.copy(translatedPdf, translatedResult, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             Files.copy(bilingualPdf, bilingualResult, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            log.info("BabelDOC 完成: file={}, mono={}, dual={}", fileName,
-                    translatedPdf.getFileName(), bilingualPdf.getFileName());
-            return new TranslationResult(translatedResult, bilingualResult);
+            log.info("BabelDOC 完成: file={}, mono={}, dual={}, paragraphs={}/{} failed, failedPages={}",
+                    fileName, translatedPdf.getFileName(), bilingualPdf.getFileName(),
+                    paragraphs.get().failed(), paragraphs.get().total(), paragraphs.get().failedPages());
+            return new TranslationResult(translatedResult, bilingualResult, paragraphs.get());
         } catch (IllegalStateException e) {
             throw e;
         } catch (InterruptedException e) {
@@ -513,14 +558,22 @@ public class BabelDocService {
 
     /** Lines are read in order: a page may close the bibliography and open an appendix. */
     static boolean referenceSectionActiveAfter(String pageText, boolean active) {
-        for (String line : pageText.lines().toList()) {
+        List<String> lines = pageText.lines().filter(line -> !line.isBlank()).toList();
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
             if (REFERENCE_HEADING.matcher(line).matches()) {
                 active = true;
-            } else if (active && REFERENCE_SECTION_END.matcher(line).matches()) {
+            } else if (active && endsReferenceSection(line, i + 1 < lines.size() ? lines.get(i + 1) : "")) {
                 active = false;
             }
         }
         return active;
+    }
+
+    private static boolean endsReferenceSection(String line, String nextLine) {
+        return REFERENCE_SECTION_END.matcher(line).matches()
+                || (BARE_APPENDIX_LETTER.matcher(line).matches()
+                        && APPENDIX_TITLE_LINE.matcher(nextLine).matches());
     }
 
     /** Splits on whitespace; "double" or 'single' quotes keep paths with spaces together. */
@@ -559,13 +612,15 @@ public class BabelDocService {
         return safeName.toLowerCase().endsWith(".pdf") ? safeName : safeName + ".pdf";
     }
 
-    private void readOutput(Process process, StringBuilder output, Consumer<ProgressUpdate> progressConsumer) {
+    private void readOutput(Process process, StringBuilder output, Consumer<ProgressUpdate> progressConsumer,
+                            AtomicReference<ParagraphStats> paragraphs) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 appendOutputTail(output, line);
                 parseProgress(line, progressConsumer);
+                parseParagraphs(line).ifPresent(paragraphs::set);
             }
         } catch (IOException e) {
             appendOutputTail(output, "无法读取 BabelDOC 输出: " + e.getMessage());
@@ -601,6 +656,68 @@ public class BabelDocService {
         }
     }
 
+    /** The runner's final {"type": "paragraphs"} report; absent for text-less pages. */
+    Optional<ParagraphStats> parseParagraphs(String line) {
+        if (!line.startsWith("{")) return Optional.empty();
+        try {
+            JsonNode root = objectMapper.readTree(line);
+            if (!"paragraphs".equals(root.path("type").asText())) return Optional.empty();
+            Map<Integer, Integer> failedPages = new TreeMap<>();
+            for (Iterator<Map.Entry<String, JsonNode>> it = root.path("failedPages").fields(); it.hasNext(); ) {
+                Map.Entry<String, JsonNode> entry = it.next();
+                failedPages.put(Integer.parseInt(entry.getKey()), entry.getValue().asInt());
+            }
+            return Optional.of(new ParagraphStats(
+                    root.path("translated").asInt(), root.path("failed").asInt(), failedPages));
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
+    }
+
+    static boolean exceedsKeptSourceLimit(ParagraphStats paragraphs) {
+        return paragraphs.failed() > MAX_KEPT_SOURCE_PARAGRAPHS
+                || paragraphs.failed() * 100L > (long) MAX_KEPT_SOURCE_PERCENT * paragraphs.total();
+    }
+
+    /** User-facing note for a delivered document that kept a few source paragraphs, or null. */
+    public static String keptSourceWarning(ParagraphStats paragraphs) {
+        if (paragraphs == null || paragraphs.failed() <= 0) return null;
+        String pages = paragraphs.failedPages().keySet().stream()
+                .map(String::valueOf).collect(Collectors.joining("、"));
+        return (pages.isEmpty() ? "" : "第 " + pages + " 页")
+                + "有 " + paragraphs.failed() + " 段翻译失败，已保留原文";
+    }
+
+    private IllegalStateException keptSourceLimitExceeded(String fileName, ParagraphStats paragraphs) {
+        log.warn("翻译失败段落超过可交付上限: file={}, failed={}/{}, failedPages={}",
+                fileName, paragraphs.failed(), paragraphs.total(), paragraphs.failedPages());
+        return new IllegalStateException("有 " + paragraphs.failed() + " 段翻译失败，超过可交付上限（不超过 "
+                + MAX_KEPT_SOURCE_PARAGRAPHS + " 段且不超过 " + MAX_KEPT_SOURCE_PERCENT + "%），请重试");
+    }
+
+    private void writeChunkParagraphs(Path chunkDir, ParagraphStats paragraphs) throws IOException {
+        objectMapper.writeValue(chunkDir.resolve(CHUNK_PARAGRAPHS_FILE).toFile(), paragraphs);
+    }
+
+    /** Chunks cached before paragraph reporting passed the all-or-nothing gate: none kept source. */
+    private ParagraphStats readChunkParagraphs(Path chunkDir) {
+        Path file = chunkDir.resolve(CHUNK_PARAGRAPHS_FILE);
+        if (!Files.isRegularFile(file)) return ParagraphStats.NONE;
+        try {
+            return objectMapper.readValue(file.toFile(), ParagraphStats.class);
+        } catch (IOException e) {
+            log.warn("忽略损坏的分片段落统计: {}", file);
+            return ParagraphStats.NONE;
+        }
+    }
+
+    private void deleteQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+        }
+    }
+
     private Path findPdf(Path outputDir, String suffix, String label) throws IOException {
         try (Stream<Path> files = Files.walk(outputDir)) {
             return files.filter(Files::isRegularFile)
@@ -610,7 +727,30 @@ public class BabelDocService {
         }
     }
 
-    public record TranslationResult(Path translatedPdf, Path bilingualPdf) {}
+    public record TranslationResult(Path translatedPdf, Path bilingualPdf, ParagraphStats paragraphs) {
+        public TranslationResult(Path translatedPdf, Path bilingualPdf) {
+            this(translatedPdf, bilingualPdf, ParagraphStats.NONE);
+        }
+    }
+
+    /** Paragraphs translated, and ones BabelDOC kept in the source language, with their pages. */
+    public record ParagraphStats(int translated, int failed, Map<Integer, Integer> failedPages) {
+        public static final ParagraphStats NONE = new ParagraphStats(0, 0, Map.of());
+
+        public ParagraphStats {
+            failedPages = failedPages == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(failedPages));
+        }
+
+        public int total() {
+            return translated + failed;
+        }
+
+        ParagraphStats plus(ParagraphStats other) {
+            Map<Integer, Integer> pages = new TreeMap<>(failedPages);
+            other.failedPages.forEach((page, count) -> pages.merge(page, count, Integer::sum));
+            return new ParagraphStats(translated + other.translated, failed + other.failed, pages);
+        }
+    }
     public record ProgressUpdate(double progress, String stage, int current, int total) {}
 
     public static class ResourcePressureException extends IllegalStateException {

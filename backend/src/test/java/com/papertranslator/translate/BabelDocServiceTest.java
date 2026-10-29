@@ -15,12 +15,15 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -173,7 +176,7 @@ class BabelDocServiceTest {
         writeTextPdf(cached.resolve("translated.pdf"), 4, 0, "");
         writeTextPdf(cached.resolve("bilingual.pdf"), 4, 0, "");
         Files.writeString(resultDir.resolve(".babeldoc-chunks/shared/manifest.txt"), String.join("\n",
-                "version=2", "completion=complete-v1", "references=titled-appendix-v1", "input=" + tempDir.resolve("input.pdf").toAbsolutePath().normalize(),
+                "version=2", "completion=complete-v1", "references=lettered-appendix-v1", "input=" + tempDir.resolve("input.pdf").toAbsolutePath().normalize(),
                 "chunkSize=4", "fontFamily=auto", "model=null"));
 
         service.translatePdf(tempDir.resolve("input.pdf"), resultDir, "paper.pdf",
@@ -215,7 +218,7 @@ class BabelDocServiceTest {
         writeTextPdf(legacyChunk.resolve("translated.pdf"), 4, 0, "");
         writeTextPdf(legacyChunk.resolve("bilingual.pdf"), 4, 0, "");
         Files.writeString(resultDir.resolve(".babeldoc-chunks/1-10/manifest.txt"), String.join("\n",
-                "version=1", "completion=complete-v1", "references=titled-appendix-v1", "input=" + Files.size(tempDir.resolve("input.pdf"))
+                "version=1", "completion=complete-v1", "references=lettered-appendix-v1", "input=" + Files.size(tempDir.resolve("input.pdf"))
                         + ":" + Files.getLastModifiedTime(tempDir.resolve("input.pdf")).toMillis(),
                 "pages=1-10", "chunkSize=4", "fontFamily=auto", "model=null"));
 
@@ -278,6 +281,15 @@ class BabelDocServiceTest {
         // Production c5f2f327: the appendix heading carries the paper's short title.
         assertFalse(BabelDocService.referenceSectionActiveAfter(
                 "References\n[71] Z. Wei. D(r,o) grasp. 2025.\nGraspGen-X: Supplementary Material\nA. Procedural Gripper Generator", false));
+        // RT-2 and Mamba: LaTeX appendices numbered with a bare letter.
+        assertFalse(BabelDocService.referenceSectionActiveAfter(
+                "References\nA. Radford, J. W. Kim, et al. Learning. 2021.\nA. Contributions\nBody", false));
+        assertFalse(BabelDocService.referenceSectionActiveAfter("A\nDiscussion: Selection Mechanism", true));
+        assertFalse(BabelDocService.referenceSectionActiveAfter("A.1 Training Details", true));
+        assertTrue(BabelDocService.referenceSectionActiveAfter("A. Radford. Improving language understanding.", true));
+        assertTrue(BabelDocService.referenceSectionActiveAfter("B. Datasets", true));
+        assertTrue(BabelDocService.referenceSectionActiveAfter("and\nA.\nZisserman,", true));
+        assertTrue(BabelDocService.referenceSectionActiveAfter("Mish:\nA\nself", true));
         assertTrue(BabelDocService.referenceSectionActiveAfter("[12] Smith: Supplementary Material", true));
         assertTrue(BabelDocService.referenceSectionActiveAfter("J. Smith: Supporting Information", true));
     }
@@ -320,10 +332,11 @@ class BabelDocServiceTest {
     }
 
     @Test
-    void retranslatesChunksCachedBeforeTheTitledAppendixFix() throws Exception {
-        // Titled appendix headings changed which pages are kept as references, so
-        // chunks left by an interrupted run before that fix may hold untranslated
-        // appendices. The version line alone is ignored for legacy compatibility.
+    void retranslatesChunksCachedBeforeTheLetteredAppendixFix() throws Exception {
+        // Lettered appendix headings ("A. Contributions") changed which pages are
+        // kept as references, so chunks left by an interrupted run of v0.2.0
+        // (references=titled-appendix-v1) may hold untranslated appendices. The
+        // version line alone is ignored for legacy compatibility.
         RecordingBabelDocService service = newService();
         service.failAcceleratedSecondChunk.set(true);
         Path resultDir = tempDir.resolve("result");
@@ -333,7 +346,8 @@ class BabelDocServiceTest {
         Path manifest = resultDir.resolve(".babeldoc-chunks/shared/manifest.txt");
         assertTrue(Files.readString(manifest).startsWith("version=5\n"));
         Files.writeString(manifest, Files.readString(manifest)
-                .replace("version=5", "version=4").replace("references=titled-appendix-v1\n", ""));
+                .replace("version=5", "version=4")
+                .replace("references=lettered-appendix-v1", "references=titled-appendix-v1"));
 
         service.translatePdf(tempDir.resolve("input.pdf"), resultDir, "paper.pdf",
                 1, 8, "auto", 2, ignored -> { });
@@ -357,6 +371,84 @@ class BabelDocServiceTest {
         service.translatePdf(tempDir.resolve("input.pdf"), resultDir, "paper.pdf",
                 1, 8, "auto", 2, ignored -> { });
         assertEquals(List.of("1-4@2", "5-8@2"), service.calls);
+    }
+
+    @Test
+    void parsesRunnerParagraphReport() {
+        RecordingBabelDocService service = newService();
+        assertEquals(new BabelDocService.ParagraphStats(20, 2, Map.of(5, 2)), service.parseParagraphs(
+                "{\"type\": \"paragraphs\", \"translated\": 20, \"failed\": 2, "
+                        + "\"failedPages\": {\"5\": 2}, \"reason\": \"RuntimeError: forced\"}").orElseThrow());
+        assertTrue(service.parseParagraphs("{\"type\": \"finish\"}").isEmpty());
+        assertTrue(service.parseParagraphs("Traceback (most recent call last):").isEmpty());
+    }
+
+    @Test
+    void deliversAtMostThreeKeptSourceParagraphsAndTwoPercent() {
+        assertFalse(BabelDocService.exceedsKeptSourceLimit(BabelDocService.ParagraphStats.NONE));
+        assertFalse(BabelDocService.exceedsKeptSourceLimit(stats(147, 3, Map.of(5, 3))));
+        assertTrue(BabelDocService.exceedsKeptSourceLimit(stats(97, 3, Map.of(5, 3))));
+        assertTrue(BabelDocService.exceedsKeptSourceLimit(stats(400, 4, Map.of(5, 4))));
+        assertFalse(BabelDocService.exceedsKeptSourceLimit(stats(49, 1, Map.of(2, 1))));
+        assertTrue(BabelDocService.exceedsKeptSourceLimit(stats(48, 1, Map.of(2, 1))));
+    }
+
+    @Test
+    void describesPagesThatKeptSourceText() {
+        assertNull(BabelDocService.keptSourceWarning(BabelDocService.ParagraphStats.NONE));
+        assertEquals("第 5、11 页有 3 段翻译失败，已保留原文",
+                BabelDocService.keptSourceWarning(stats(200, 3, Map.of(11, 1, 5, 2))));
+    }
+
+    @Test
+    void aggregatesKeptSourceParagraphsAcrossChunksIncludingReusedOnes() throws Exception {
+        RecordingBabelDocService service = newService();
+        service.failAcceleratedSecondChunk.set(true);
+        service.paragraphs.put("1-4", stats(80, 1, Map.of(2, 1)));
+        service.paragraphs.put("5-8", stats(80, 1, Map.of(6, 1)));
+        service.paragraphs.put("9-10", stats(40, 0, Map.of()));
+        Path resultDir = tempDir.resolve("result");
+        assertThrows(BabelDocService.ResourcePressureException.class,
+                () -> service.translatePdf(tempDir.resolve("input.pdf"), resultDir,
+                        "paper.pdf", 1, 10, "auto", 4, ignored -> { }));
+
+        BabelDocService.TranslationResult result = service.translatePdf(
+                tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 1, 10, "auto", 2, ignored -> { });
+
+        // 1-4 is reused from the first attempt and still counts.
+        assertEquals(List.of("1-4@4", "5-8@4", "5-8@2", "9-10@2"), service.calls);
+        assertEquals(stats(200, 2, Map.of(2, 1, 6, 1)), result.paragraphs());
+    }
+
+    @Test
+    void failsAndDropsOnlyChunksWithKeptSourceWhenOverTheLimit() throws Exception {
+        RecordingBabelDocService service = newService();
+        service.paragraphs.put("1-4", stats(60, 2, Map.of(1, 2)));
+        service.paragraphs.put("5-8", stats(60, 2, Map.of(7, 2)));
+        Path resultDir = tempDir.resolve("result");
+
+        assertThrows(IllegalStateException.class, () -> service.translatePdf(
+                tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 1, 10, "auto", 2, ignored -> { }));
+        assertFalse(Files.exists(resultDir.resolve("translated.pdf")));
+
+        service.paragraphs.clear();
+        service.translatePdf(tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 1, 10, "auto", 2, ignored -> { });
+        assertEquals(List.of("1-4@2", "5-8@2", "9-10@2", "1-4@2", "5-8@2"), service.calls);
+    }
+
+    @Test
+    void rejectsASinglePageTaskOverTheLimit() {
+        RecordingBabelDocService service = newService();
+        service.paragraphs.put("3-3", stats(10, 1, Map.of(3, 1)));
+        Path resultDir = tempDir.resolve("single");
+
+        assertThrows(IllegalStateException.class, () -> service.translatePdf(
+                tempDir.resolve("input.pdf"), resultDir, "paper.pdf", 3, 3, "auto", 2, ignored -> { }));
+        assertFalse(Files.exists(resultDir.resolve("translated.pdf")));
+    }
+
+    private static BabelDocService.ParagraphStats stats(int translated, int failed, Map<Integer, Integer> pages) {
+        return new BabelDocService.ParagraphStats(translated, failed, pages);
     }
 
     private RecordingBabelDocService newService() {
@@ -384,6 +476,7 @@ class BabelDocServiceTest {
         private final List<String> calls = new ArrayList<>();
         private final List<String> forcedReferenceRanges = new ArrayList<>();
         private final AtomicBoolean failAcceleratedSecondChunk = new AtomicBoolean();
+        private final Map<String, ParagraphStats> paragraphs = new HashMap<>();
 
         private RecordingBabelDocService(BabelDocConfig config,
                                          ProviderSettings runtimeConfig) {
@@ -415,7 +508,8 @@ class BabelDocServiceTest {
                 }
                 return new TranslationResult(
                         resultDir.resolve("translated.pdf"),
-                        resultDir.resolve("bilingual.pdf"));
+                        resultDir.resolve("bilingual.pdf"),
+                        paragraphs.getOrDefault(startPage + "-" + endPage, ParagraphStats.NONE));
             } catch (IOException e) {
                 throw new IllegalStateException(e);
             }

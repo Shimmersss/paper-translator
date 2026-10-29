@@ -9,7 +9,10 @@ import statistics
 from pathlib import Path
 
 from tokenizer_cache import configure_tokenizer_cache
-from translation_completion import COMPLETION_CACHE_VERSION, complete_translation, fail_closed
+from translation_completion import (
+    COMPLETION_CACHE_VERSION, ParagraphOutcomes, complete_translation, disable_thinking,
+    fail_closed,
+)
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 import openai
 from pdf_ocr import line_fill_boxes, prepare_pdf_text, preserve_textless_pages
@@ -20,6 +23,7 @@ from babeldoc.docvision.doclayout import DocLayoutModel
 from babeldoc.format.pdf import high_level
 from babeldoc.format.pdf.document_il import Box, PdfParagraph, PdfRectangle
 from babeldoc.format.pdf.document_il.midend.il_translator import ILTranslator
+from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import ILTranslatorLLMOnly
 from babeldoc.format.pdf.document_il.midend.paragraph_finder import (
     ParagraphFinder,
     generate_base58_id,
@@ -268,6 +272,40 @@ def install_ocr_fill_patch():
     ParagraphFinder.add_text_fill_background = ocr_text_fill_background
 
 
+def install_paragraph_tracking(outcomes):
+    """Count, per page, paragraphs that were translated and ones that kept source text."""
+    original_llm_document = ILTranslatorLLMOnly.translate
+    original_document = ILTranslator.translate
+    original_paragraph = ILTranslator.translate_paragraph
+    original_post = ILTranslator.post_translate_paragraph
+
+    def map_pages(docs):
+        # Page numbers in the IL are 0-based indexes into the source PDF.
+        outcomes.map_document((page.page_number + 1, page.pdf_paragraph) for page in docs.page)
+
+    def translate_llm_document(self, docs):
+        map_pages(docs)
+        return original_llm_document(self, docs)
+
+    def translate_document(self, docs):
+        map_pages(docs)
+        return original_document(self, docs)
+
+    def translate_paragraph(self, paragraph, *args, **kwargs):
+        with outcomes.attempt(paragraph):
+            return original_paragraph(self, paragraph, *args, **kwargs)
+
+    def post_translate_paragraph(self, paragraph, *args, **kwargs):
+        result = original_post(self, paragraph, *args, **kwargs)
+        outcomes.record_translated(paragraph)
+        return result
+
+    ILTranslatorLLMOnly.translate = translate_llm_document
+    ILTranslator.translate = translate_document
+    ILTranslator.translate_paragraph = translate_paragraph
+    ILTranslator.post_translate_paragraph = post_translate_paragraph
+
+
 def repair_pdf_font_text(text):
     if not text:
         return text
@@ -327,6 +365,8 @@ class RepairingOpenAITranslator(OpenAITranslator):
         super().__init__(*args, **kwargs)
         self.add_cache_impact_parameters("pdf_font_text_repair", "shift-v1")
         self.add_cache_impact_parameters("translation_completeness", COMPLETION_CACHE_VERSION)
+        disable_thinking(self)
+        self.outcomes = ParagraphOutcomes()
 
     @retry(retry=retry_if_exception_type(openai.RateLimitError),
            stop=stop_after_attempt(100), wait=wait_exponential(multiplier=1, min=1, max=15),
@@ -335,12 +375,17 @@ class RepairingOpenAITranslator(OpenAITranslator):
         return complete_translation(self, text, rate_limit_params, plain=plain)
 
     def do_translate(self, text, rate_limit_params=None):
-        return fail_closed(self, lambda: self._complete_with_retry(
+        return fail_closed(self.outcomes, lambda: self._complete_with_retry(
             repair_pdf_font_text(text), rate_limit_params, True))
 
     def do_llm_translate(self, text, rate_limit_params=None):
-        return fail_closed(self, lambda: self._complete_with_retry(
-            repair_pdf_font_text(text), rate_limit_params, False))
+        call = lambda: self._complete_with_retry(  # noqa: E731
+            repair_pdf_font_text(text), rate_limit_params, False)
+        # JSON batches (request_json_mode) fall back to one call per paragraph,
+        # which is the final attempt; BabelDOC then keeps that paragraph's source.
+        if (rate_limit_params or {}).get("request_json_mode"):
+            return call()
+        return fail_closed(self.outcomes, call)
 
 
 async def run(args):
@@ -368,6 +413,7 @@ async def run(args):
         base_url=args.base_url,
         api_key=args.api_key,
     )
+    install_paragraph_tracking(translator.outcomes)
     set_translate_rate_limiter(args.qps)
     doc_layout_model = DocLayoutModel.load_onnx()
     config = TranslationConfig(
@@ -405,8 +451,17 @@ async def run(args):
             emit({"type": "error", "message": str(event.get("error", "BabelDOC 翻译失败"))})
             raise RuntimeError(event.get("error", "BabelDOC 翻译失败"))
         elif event_type == "finish":
-            if getattr(translator, "_paper_translator_incomplete_translation", False):
-                raise RuntimeError("部分段落翻译不完整，已阻止交付缺字 PDF，请重试")
+            summary = translator.outcomes.summary()
+            reason = f"（{summary['reason']}）" if summary["reason"] else ""
+            if summary["untranslatedPages"]:
+                pages = "、".join(str(page) for page in summary["untranslatedPages"])
+                raise RuntimeError(f"第 {pages} 页没有段落翻译成功，已阻止交付{reason}")
+            if summary["unattributed"]:
+                raise RuntimeError(f"有段落翻译失败且无法定位页码，已阻止交付{reason}")
+            # The backend applies the document-wide limit on kept-source paragraphs.
+            emit({"type": "paragraphs", "translated": summary["translated"],
+                  "failed": summary["failed"], "failedPages": summary["failedPages"],
+                  "reason": summary["reason"]})
             emit({"type": "finish"})
             break
 

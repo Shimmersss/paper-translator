@@ -236,6 +236,15 @@
           </div>
         </div>
 
+        <n-alert
+          v-if="keptSourceWarning"
+          type="warning"
+          title="少量段落保留原文"
+          style="margin-bottom: 20px"
+        >
+          {{ keptSourceWarning }}。这些段落模型多次重试仍未译出，其余内容已正常翻译。
+        </n-alert>
+
         <div v-if="!isImageInput" class="pdf-preview-panel">
           <div class="pdf-preview-header">
             <div>
@@ -386,6 +395,7 @@ const fontFamilyOptions = [
 const translationQps = ref(DEFAULT_FAST_QPS)
 const requestedQps = ref(DEFAULT_FAST_QPS)
 const resourceDowngraded = ref(false)
+const keptSourceWarning = ref('')
 const translationProgress = ref(0)
 const progressStageLabel = ref('正在启动 BabelDOC...')
 const queuePosition = ref(0)
@@ -502,6 +512,7 @@ async function handleStartTranslate() {
     translationQps.value = res.data.qps || translationQps.value
     requestedQps.value = res.data.requestedQps || translationQps.value
     resourceDowngraded.value = false
+    keptSourceWarning.value = ''
     isGeneratingPdf.value = false
     translationProgress.value = 0
     progressStageLabel.value = isImageInput.value ? '正在准备视觉模型翻译...' : '正在启动 BabelDOC...'
@@ -534,6 +545,7 @@ function startSSE() {
     eventSource?.close()
     eventSource = null
     message.success('翻译完成！')
+    loadKeptSourceWarning()
     loadPdfPreview()
     loadRecentTranslations()
   })
@@ -595,6 +607,19 @@ function startSSE() {
   }
 }
 
+// The completion event carries no details; the task status has the kept-source note.
+async function loadKeptSourceWarning() {
+  const currentTaskId = taskId.value
+  try {
+    const res = await getTranslationStatus(currentTaskId)
+    if (res.code === 200 && taskId.value === currentTaskId) {
+      keptSourceWarning.value = res.data.keptSourceWarning || ''
+    }
+  } catch {
+    // The result stays usable; only the note is missing.
+  }
+}
+
 // 断线重连
 async function reconnectSSE() {
   try {
@@ -604,6 +629,7 @@ async function reconnectSSE() {
       if (data.status === 'completed') {
         translationProgress.value = 100
         progressStageLabel.value = '翻译完成'
+        keptSourceWarning.value = data.keptSourceWarning || ''
         step.value = 'result'
         message.success('翻译已完成')
         loadPdfPreview()
@@ -716,6 +742,7 @@ function resetToUpload() {
   translationQps.value = DEFAULT_FAST_QPS
   requestedQps.value = DEFAULT_FAST_QPS
   resourceDowngraded.value = false
+  keptSourceWarning.value = ''
   translationProgress.value = 0
   queuePosition.value = 0
   progressStageLabel.value = '正在启动 BabelDOC...'
@@ -803,6 +830,7 @@ async function restoreTask(savedTaskId, notify = false) {
   translationQps.value = data.qps || 4
   requestedQps.value = data.requestedQps || translationQps.value
   resourceDowngraded.value = Boolean(data.resourceDowngraded)
+  keptSourceWarning.value = data.keptSourceWarning || ''
   translationProgress.value = Math.round(data.progress || 0)
   queuePosition.value = data.queuePosition || 0
   progressStageLabel.value = data.status === 'queued'

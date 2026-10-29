@@ -170,6 +170,7 @@ public class TranslateController {
         data.put("status", session.getStatus());
         data.put("textQualitySuspicious", session.isTextQualitySuspicious());
         data.put("textQualityWarning", session.getTextQualityWarning() != null ? session.getTextQualityWarning() : "");
+        data.put("keptSourceWarning", session.getKeptSourceWarning() != null ? session.getKeptSourceWarning() : "");
         data.put("totalPages", session.getTotalPages());
         data.put("startPage", session.getStartPage());
         data.put("endPage", session.getEndPage());
@@ -275,6 +276,7 @@ public class TranslateController {
         data.put("status", session.getStatus());
         data.put("textQualitySuspicious", session.isTextQualitySuspicious());
         data.put("textQualityWarning", session.getTextQualityWarning() != null ? session.getTextQualityWarning() : "");
+        data.put("keptSourceWarning", session.getKeptSourceWarning() != null ? session.getKeptSourceWarning() : "");
         data.put("totalPages", session.getTotalPages());
         data.put("startPage", session.getStartPage());
         data.put("endPage", session.getEndPage());

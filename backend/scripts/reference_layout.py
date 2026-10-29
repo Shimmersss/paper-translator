@@ -40,9 +40,22 @@ _POST_REFERENCE_HEADING = (
     r"|(?i:acknowledge?ments?)|(?i:author\s+contributions))"
     r"\s*[.:\uff1a]?"
 )
+# LaTeX's \appendix numbers appendices with a bare letter: "A. Contributions",
+# "A.1 Training Details", or "A" alone with the title on the next line. Only "A"
+# ends the bibliography, since it opens the first appendix. The title may not
+# contain a comma, semicolon, ". ", a year or "et al" and may not end with a
+# period, so author lines such as "A. Radford, J. W. Kim, ..." stay in the
+# bibliography.
+_APPENDIX_TITLE = r"[A-Z](?:(?!\.\s|[,;]|\b(?:18|19|20)\d{2}\b|\bet\s+al\b).){0,60}(?<![.,;])"
+_LETTERED_APPENDIX = rf"A(?:\.\d{{1,2}})*\.?\s+{_APPENDIX_TITLE}"
 REFERENCE_SECTION_END_RE = re.compile(
-    rf"^\s*{_TITLE_PREFIX}{_SECTION_NUMBER}(?:{_APPENDIX_HEADING}|{_POST_REFERENCE_HEADING})\s*$"
+    rf"^\s*(?:{_TITLE_PREFIX}{_SECTION_NUMBER}(?:{_APPENDIX_HEADING}|{_POST_REFERENCE_HEADING})"
+    rf"|{_LETTERED_APPENDIX})\s*$"
 )
+# A lone "A" is also a word of a reference split one word per line ("Mish: / A /
+# self-regularized"), so it ends the bibliography only before a title-like line.
+BARE_APPENDIX_LETTER_RE = re.compile(r"^\s*A\.?\s*$")
+APPENDIX_TITLE_RE = re.compile(rf"^\s*{_APPENDIX_TITLE}\s*$")
 REFERENCE_AUTHOR_RE = re.compile(
     r"^\s*(?:[A-Z][A-Za-z'’-]+,\s*(?:[A-Z]\.?\s*){1,3}|"
     r"[A-Z][A-Za-z'’-]+\s+(?:et\s+al\.?|and|&)\s+)",
@@ -93,14 +106,27 @@ def is_reference_heading(text):
     return bool(REFERENCE_HEADING_RE.fullmatch((text or "").strip()))
 
 
+def ends_reference_section(text, next_text=None):
+    """Whether a heading after the bibliography opens an appendix or end matter."""
+    text = (text or "").strip()
+    if REFERENCE_SECTION_END_RE.fullmatch(text):
+        return True
+    return bool(
+        BARE_APPENDIX_LETTER_RE.fullmatch(text)
+        and APPENDIX_TITLE_RE.fullmatch((next_text or "").strip())
+    )
+
+
 def reference_section_flags(texts, in_reference_section=False):
     """Mark bibliography paragraphs, including weak entries after a heading."""
+    texts = list(texts)
     flags = []
-    for text in texts:
+    for index, text in enumerate(texts):
         normalized = (text or "").strip()
+        following = texts[index + 1] if index + 1 < len(texts) else None
         if is_reference_heading(normalized):
             in_reference_section = True
-        elif in_reference_section and REFERENCE_SECTION_END_RE.fullmatch(normalized):
+        elif in_reference_section and ends_reference_section(normalized, following):
             in_reference_section = False
         flags.append(in_reference_section or is_reference_paragraph(normalized))
     return flags

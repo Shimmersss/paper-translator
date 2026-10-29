@@ -39,7 +39,7 @@ The screenshots are from a real production run: *RT-2: Vision-Language-Action Mo
 Pages 13–26 of this paper are references followed by appendices, and all of them stayed in English. References are left in the original language on purpose. The appendices should have been translated, and they were not, for two reasons:
 
 1. This run happened before the appendix rules existed (they were added in October 2026).
-2. Even with the current rules, RT-2's appendix headings ("A. Contributions", "B. Datasets", …) are not recognized. Only "Appendix …", keyword headings such as "Supplementary Material" or "Acknowledgements", and titled variants are. See [Known issues](#known-issues).
+2. Even the October rules did not recognize RT-2's appendix headings ("A. Contributions", "B. Datasets", …); they only knew "Appendix …", keyword headings such as "Supplementary Material" or "Acknowledgements", and titled variants. Lettered headings are handled on `main` since v0.2.0 (see [item 5](#5-references-and-appendices)).
 
 ## Speed and memory on 2 vCPU / 4 GB
 
@@ -58,7 +58,7 @@ These numbers were measured on the production server with one-page chunks. Each 
 
 ## Problems we hit and what changed
 
-Each entry gives the symptom, the cause, and where the fix lives. "In this repo" means the released code already contains it. "Production only" means the site has it and this repository does not yet.
+Each entry gives the symptom, the cause, and where the fix lives. "In this repo" means the code on `main` contains it; items marked "after v0.2.0" are not in a tagged release yet. "Production only" means the site has it and this repository does not.
 
 ### 1. Memory: the hardest part on a 4 GB machine
 
@@ -102,7 +102,7 @@ If you run on a small host, keep the app guard below the systemd limits, keep so
   - Numbered and titled appendix headings, plus Supplementary / Supporting / Methods / Acknowledgements, now end the references. **In this repo.**
   - A running-title prefix such as "GraspGen-X: Supplementary Material" is also accepted. **In this repo.**
   - Chunks cached before the fix have to be invalidated. Bumping the cache version did not do it, because the compatibility check ignores the `version=` line. A separate policy line (`references=titled-appendix-v1`) is used instead.
-- **Still open:** bare letter headings ("A", "A. Contributions"). See [Known issues](#known-issues).
+  - LaTeX-style lettered headings also end the references: "A. Contributions", "A.1 Training Details", or a lone "A" whose next line looks like a title ("A" / "Discussion: Selection Mechanism"). Only "A" counts, since it opens the first appendix. The title may not contain a comma, semicolon, year or "et al" and may not end with a period, so author lines like "A. Radford, J. W. Kim, …" stay in the bibliography. A lone "A" needs the title line because some PDFs extract references one word per line ("Mish: / A / self"). Run over 25 papers from a personal library, the rule ended the references only at real appendices (RT-2, Mamba, OpenVLA, LiLa-WAM). Cached chunks get a new policy line (`references=lettered-appendix-v1`). **In this repo, after v0.2.0.** The site has the same code but has not deployed it yet.
 
 ### 6. Never deliver a half-translated PDF
 
@@ -117,18 +117,18 @@ If you run on a small host, keep the app guard below the systemd limits, keep so
 
 - **Symptom:** a chunk sat for about 10 minutes and then failed. The model returned an empty answer with `finish_reason=length`.
 - **Cause:** the provider's v2.6 model reasons by default. For a 923-token paragraph it spent all 4096 output tokens on reasoning, and the same happened at every larger budget.
-- **Change:** turn reasoning off for that provider's models (`thinking: {"type": "disabled"}`) and include that flag in the translation cache key. **Production only.** If your provider reasons by default, turn reasoning off or use a non-reasoning model.
+- **Change:** turn reasoning off for that provider's models (`thinking: {"type": "disabled"}`) and include that flag in the translation cache key. **In this repo, after v0.2.0** (applies to model names starting with `mimo-`). If your provider reasons by default, turn reasoning off or use a non-reasoning model.
 
 ### 8. A rejected batch failed the whole document
 
 - **Symptom:** a document failed even though every paragraph eventually translated.
 - **Cause:** BabelDOC sends paragraphs in JSON batches and falls back to one paragraph per request when a batch is rejected. The completeness check marked the document incomplete as soon as the batch was rejected, so a successful fallback did not help.
-- **Change:** only a failure on the final per-paragraph request marks the document incomplete. The runner's error message now includes the reason. **Production only.**
+- **Change:** only a failure on the final per-paragraph request marks the document incomplete. The runner's error message now includes the reason. **In this repo, after v0.2.0.**
 
 ### 9. A few kept-source paragraphs should not fail a 30-page paper
 
 - **Symptom:** a long paper failed because a handful of paragraphs were still in English after every retry.
-- **Change:** tolerate at most 3 untranslated paragraphs and at most 2% of the document, as long as no page is entirely untranslated. The task then finishes with a warning that lists the affected pages, and per-chunk counts are written to `paragraphs.json`. Anything beyond that still fails. **Production only.**
+- **Change:** tolerate at most 3 untranslated paragraphs and at most 2% of the document, as long as no page is entirely untranslated. The task then finishes with a warning that lists the affected pages, and per-chunk counts are written to `paragraphs.json`. Anything beyond that still fails, and only the chunks with failures are retranslated on retry. **In this repo, after v0.2.0.**
 
 ### 10. Temporary files from killed runs
 
@@ -148,7 +148,7 @@ Vision models give only approximate text boxes, so covers either missed parts of
 
 ## Known issues
 
-- **Lettered appendix headings are not recognized.** Headings like "A. Contributions" or a bare "A" followed by a title line leave the appendix in English, and the task still reports success. The page contains no translatable paragraphs, so the "no fully untranslated page" check does not fire. This affects both the site and this repository.
+- **Unusual appendix headings** (for example "Supplement S1" or a heading that is only a title) can still leave an appendix in English while the task reports success: the page has no translatable paragraphs, so the "no fully untranslated page" check does not fire.
 - **Tables:** short cells can be dropped or merged (see RT-2 Table 1 above).
 - **Small labels in figures** can overlap or lose their layout.
 - **Names:** author names may be transliterated in some places and kept in Latin script in others.
@@ -161,10 +161,8 @@ Vision models give only approximate text boxes, so covers either missed parts of
 | Accounts, credits, refunds | Yes | Removed |
 | Memory guard thresholds | Tuned for that host | Same logic. Defaults: working-set guard 2850 MiB, 400 MiB minimum available, 1200 MiB service swap. The memory limit can be changed in the manual performance tier |
 | Settings page, performance tiers, CLI | No (environment variables and an admin panel) | Yes |
-| Reasoning disabled for reasoning-by-default models | Yes | Not yet |
-| Batch-fallback fix (item 8) | Yes | Not yet |
-| Kept-source tolerance with warning (item 9) | Yes | Not yet |
+| Reasoning disabled for `mimo-` models (item 7) | Yes | Yes, after v0.2.0 |
+| Batch-fallback fix (item 8) | Yes | Yes, after v0.2.0 |
+| Kept-source tolerance with warning (item 9) | Yes | Yes, after v0.2.0 |
 | Image text-box snapping (item 12) | No | Yes |
-| Lettered appendix headings | Not fixed | Not fixed |
-
-The three "not yet" rows are planned for a future release.
+| Lettered appendix headings (item 5) | Fixed in code, not deployed yet | Yes, after v0.2.0 |

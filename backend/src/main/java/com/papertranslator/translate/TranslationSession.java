@@ -23,6 +23,8 @@ public class TranslationSession {
     private volatile String errorMessage;
     private volatile boolean textQualitySuspicious;
     private volatile String textQualityWarning;
+    /** Set when a delivered document kept a few paragraphs in the source language. */
+    private volatile String keptSourceWarning;
     private String fontFamily = "auto";
     private int qps = 4;
     private int requestedQps = 4;
@@ -64,6 +66,7 @@ public class TranslationSession {
     public String getErrorMessage() { return errorMessage; }
     public boolean isTextQualitySuspicious() { return textQualitySuspicious; }
     public String getTextQualityWarning() { return textQualityWarning; }
+    public String getKeptSourceWarning() { return keptSourceWarning; }
     public String getFontFamily() { return fontFamily; }
     public int getQps() { return qps; }
     public int getRequestedQps() { return requestedQps; }
@@ -113,6 +116,7 @@ public class TranslationSession {
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; touch(); }
     public void setTextQualitySuspicious(boolean textQualitySuspicious) { this.textQualitySuspicious = textQualitySuspicious; touch(); }
     public void setTextQualityWarning(String textQualityWarning) { this.textQualityWarning = textQualityWarning; touch(); }
+    public void setKeptSourceWarning(String keptSourceWarning) { this.keptSourceWarning = keptSourceWarning; touch(); }
     public void setFontFamily(String fontFamily) { this.fontFamily = fontFamily; touch(); }
     public void setQps(int qps) { this.qps = qps; touch(); }
     public void setRequestedQps(int requestedQps) { this.requestedQps = requestedQps; touch(); }

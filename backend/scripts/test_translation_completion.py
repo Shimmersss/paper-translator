@@ -3,8 +3,10 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock
 
 from translation_completion import (
-    IncompleteTranslationError, checked_content, complete_translation, fail_closed,
+    IncompleteTranslationError, ParagraphOutcomes, checked_content, complete_translation,
+    disable_thinking, fail_closed,
 )
+
 
 
 def response(text, reason="stop"):
@@ -19,6 +21,7 @@ def translator(*responses):
         enable_json_mode_if_requested=True, send_dashscope_header=False,
         extra_body={"reasoning_effort": "minimal"}, update_token_count=Mock(),
         prompt=lambda text: [{"role": "user", "content": text}],
+        add_cache_impact_parameters=Mock(),
     )
 
 
@@ -42,15 +45,71 @@ class TranslationCompletionTest(unittest.TestCase):
         self.assertEqual("完整译文", complete_translation(engine, "source"))
         self.assertEqual([4096, 8192, 16384], [c.kwargs["max_tokens"]
                          for c in engine.client.chat.completions.create.call_args_list])
-        self.assertFalse(getattr(engine, "_paper_translator_incomplete_translation", False))
         self.assertEqual(3, engine.update_token_count.call_count)
 
-    def test_empty_responses_with_stop_are_retried_and_fail_closed(self):
-        engine = translator(response(""), response(""), response(""))
-        with self.assertRaises(IncompleteTranslationError):
-            complete_translation(engine, "source")
-        self.assertTrue(engine._paper_translator_incomplete_translation)
+    def test_empty_responses_with_stop_are_retried_and_recorded(self):
+        engine, outcomes, para = translator(response(""), response(""), response("")), ParagraphOutcomes(), object()
+        outcomes.map_document([(5, [para])])
+        with outcomes.attempt(para), self.assertRaises(IncompleteTranslationError):
+            fail_closed(outcomes, lambda: complete_translation(engine, "source", plain=True))
+        summary = outcomes.summary()
+        self.assertEqual((0, 1, {"5": 1}, [5]), (summary["translated"], summary["failed"],
+                         summary["failedPages"], summary["untranslatedPages"]))
+        self.assertIn("IncompleteTranslationError", summary["reason"])
         self.assertEqual(3, engine.client.chat.completions.create.call_count)
+
+    def test_failed_batch_is_not_recorded_before_paragraph_fallback(self):
+        # 2026-10-24: one empty "output" in a JSON batch failed whole pages even
+        # though BabelDOC re-translated each paragraph successfully afterwards.
+        engine = translator(*[response('[{"id":0,"output":""}]')] * 3, response("译文"))
+        outcomes, para = ParagraphOutcomes(), object()
+        outcomes.map_document([(1, [para])])
+        with self.assertRaises(IncompleteTranslationError):
+            complete_translation(engine, "batch", {"request_json_mode": True})
+        with outcomes.attempt(para):
+            self.assertEqual("译文", fail_closed(
+                outcomes, lambda: complete_translation(engine, "paragraph", plain=True)))
+        outcomes.record_translated(para)
+        self.assertEqual((1, 0), (outcomes.summary()["translated"], outcomes.summary()["failed"]))
+
+    def test_few_failed_paragraphs_are_reported_per_page(self):
+        outcomes = ParagraphOutcomes()
+        page3, page4 = [object() for _ in range(3)], [object(), object()]
+        outcomes.map_document([(3, page3), (4, page4)])
+        for para in page3[:2] + page4:
+            outcomes.record_translated(para)
+        with outcomes.attempt(page3[2]):
+            outcomes.record_failure(RuntimeError("Error code: 400 - Unsupported model"))
+        summary = outcomes.summary()
+        self.assertEqual((4, 1, {"3": 1}, [], 0), (summary["translated"], summary["failed"],
+                         summary["failedPages"], summary["untranslatedPages"], summary["unattributed"]))
+        self.assertIn("Unsupported model", summary["reason"])
+
+    def test_failures_outside_a_paragraph_are_unattributed(self):
+        outcomes = ParagraphOutcomes()
+        outcomes.record_failure(RuntimeError("boom"))
+        self.assertEqual(1, outcomes.summary()["unattributed"])
+
+    def test_attempt_restores_previous_paragraph(self):
+        outcomes, outer, inner = ParagraphOutcomes(), object(), object()
+        outcomes.map_document([(2, [outer, inner])])
+        with outcomes.attempt(outer):
+            with outcomes.attempt(inner):
+                pass
+            outcomes.record_failure(RuntimeError("late"))
+        self.assertEqual({"2": 1}, outcomes.summary()["failedPages"])
+
+    def test_disables_thinking_only_for_mimo_models(self):
+        mimo = translator()
+        mimo.model, mimo.extra_body = "mimo-v2.6-pro", {}
+        disable_thinking(mimo)
+        self.assertEqual({"thinking": {"type": "disabled"}}, mimo.extra_body)
+        mimo.add_cache_impact_parameters.assert_called_once_with("thinking", "disabled")
+        other = translator()
+        other.model, other.extra_body = "gpt-4o-mini", {}
+        disable_thinking(other)
+        self.assertEqual({}, other.extra_body)
+        other.add_cache_impact_parameters.assert_not_called()
 
     def test_preserves_provider_options_and_plain_prompt(self):
         engine = translator(response("译文"), response("译文"))
@@ -66,19 +125,6 @@ class TranslationCompletionTest(unittest.TestCase):
         engine = translator()
         self.assertIsNone(complete_translation(engine, None))
         engine.client.chat.completions.create.assert_not_called()
-
-    def test_provider_errors_mark_the_document_incomplete(self):
-        # A rejected model or key used to leave the paragraph untranslated while
-        # BabelDOC still reported "finish".
-        engine = translator(RuntimeError("Error code: 400 - Unsupported model"))
-        with self.assertRaises(RuntimeError):
-            fail_closed(engine, lambda: complete_translation(engine, "Hello"))
-        self.assertTrue(engine._paper_translator_incomplete_translation)
-
-    def test_successful_calls_leave_the_document_complete(self):
-        engine = translator(response("你好"))
-        self.assertEqual("你好", fail_closed(engine, lambda: complete_translation(engine, "Hello")))
-        self.assertFalse(getattr(engine, "_paper_translator_incomplete_translation", False))
 
 
 if __name__ == "__main__":

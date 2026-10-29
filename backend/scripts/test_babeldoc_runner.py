@@ -107,6 +107,37 @@ class ReferenceLayoutTest(unittest.TestCase):
                     ),
                 )
 
+    def test_lettered_appendix_headings_end_reference_section(self):
+        # RT-2 ("A. Contributions") and Mamba ("A" above "Discussion: Selection
+        # Mechanism") appendices were kept in English as if they were references.
+        weak_entry = "A source without machine-readable publication metadata."
+        body = "The governing equations are derived below."
+        for headings in (
+            ["A. Contributions"],
+            ["A Discussion: Selection Mechanism"],
+            ["A.1 Training Details"],
+            ["A", "Discussion: Selection Mechanism"],
+            ["A.", "Data Mixture Details"],
+        ):
+            with self.subTest(headings=headings):
+                flags = reference_section_flags(["References", weak_entry, *headings, body])
+                self.assertEqual([True, True], flags[:2])
+                self.assertFalse(any(flags[2:]))
+
+    def test_letter_a_inside_references_keeps_reference_section(self):
+        for lines in (
+            ["A. Radford, J. W. Kim, C. Hallacy, et al. Learning transferable models."],
+            ["A. Radford. Improving language understanding by generative pre-training."],
+            ["A. Herzog, et al. Do as I can, not as I say"],
+            ["A survey of robot learning, 2020."],
+            ["B. Datasets"],
+            # References extracted one word per line.
+            ["and", "A.", "Zisserman,"],
+            ["Mish:", "A", "self"],
+        ):
+            with self.subTest(lines=lines):
+                self.assertTrue(all(reference_section_flags(["References", *lines])))
+
     def test_appendix_mentions_in_entries_or_prose_keep_reference_section(self):
         self.assertEqual(
             [True, True, True],
