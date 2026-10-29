@@ -6,6 +6,10 @@
 
 它以 [BabelDOC](https://github.com/funstory-ai/BabelDOC) 为翻译引擎，补上了长期运行的服务所需的部分：持久化任务队列、分片翻译与失败续跑、小内存服务器的内存保护、扫描页 OCR，以及“译文不完整就不交付”的检查。项目从个人网站中拆分出来，此前一直在 2 核 / 4 GB 的服务器上翻译真实论文；开源版去掉了账号与计费。
 
+![双语对照效果：RT-2 论文第 1 页，左为英文原文，右为中文译文](docs/images/rt2-page1-bilingual.png)
+
+*一次生产翻译得到的双语 PDF（局部），论文为 RT-2（[arXiv:2307.15818](https://arxiv.org/abs/2307.15818)，© 2023 Google DeepMind）。更多截图、实测速度与内存，以及生产环境踩过的坑，见[生产环境实测记录](docs/production-notes.zh-CN.md)。*
+
 ## 功能
 
 - **保留版式的 PDF 翻译**：BabelDOC 在原位置重建译文，输出纯中文版和双语对照版，支持逐页预览，也可以导出纯文本。

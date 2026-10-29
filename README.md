@@ -8,6 +8,10 @@ It wraps [BabelDOC](https://github.com/funstory-ai/BabelDOC) with what a long-ru
 
 The interface is in Chinese.
 
+![Bilingual output: the RT-2 paper's first page, English on the left and Chinese on the right](docs/images/rt2-page1-bilingual.png)
+
+*Bilingual PDF from a production run on RT-2 ([arXiv:2307.15818](https://arxiv.org/abs/2307.15818), © 2023 Google DeepMind), cropped. More examples, measured speed and memory, and the problems hit in production are in [Production notes](docs/production-notes.md).*
+
 ## Features
 
 - **Layout-preserving PDF translation.** BabelDOC rebuilds each page with the translation in place. You get `translated.pdf` and `bilingual.pdf`, a page-by-page preview, and a plain-text export.
