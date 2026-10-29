@@ -13,7 +13,7 @@
 
     <groupId>com.papertranslator</groupId>
     <artifactId>paper-translator</artifactId>
-    <version>0.2.0</version>
+    <version>0.2.1</version>
     <name>paper-translator</name>
     <description>Layout-preserving paper translation built on BabelDOC</description>
 
