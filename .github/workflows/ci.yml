@@ -20,6 +20,8 @@ jobs:
         shell: bash
     env:
       PAPER_TRANSLATOR_HOME: ${{ github.workspace }}/../pt-home
+      # Install from a published commit, not the temporary PR merge commit.
+      PAPER_TRANSLATOR_REF: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +91,6 @@ jobs:
       - name: Installer (install.sh)
         if: runner.os != 'Windows'
         env:
-          PAPER_TRANSLATOR_REF: ${{ github.sha }}
           PAPER_TRANSLATOR_HOME: ${{ github.workspace }}/../pt-home-installer
         run: sh install.sh --non-interactive --from-source --source-dir "$GITHUB_WORKSPACE" --skip-warmup
 
@@ -97,7 +98,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          PAPER_TRANSLATOR_REF: ${{ github.sha }}
           PAPER_TRANSLATOR_HOME: ${{ github.workspace }}\..\pt-home-installer
         run: |
           $errors = $null
@@ -114,7 +114,7 @@ jobs:
           home="$RUNNER_TEMP/mirror-home"
           mkdir -p "$home"
           env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-            PAPER_TRANSLATOR_MIRROR=cn PAPER_TRANSLATOR_REF="$GITHUB_SHA" \
+            PAPER_TRANSLATOR_MIRROR=cn PAPER_TRANSLATOR_REF="$PAPER_TRANSLATOR_REF" \
             sh install.sh --help > "$RUNNER_TEMP/mirror.log" 2>&1 || { cat "$RUNNER_TEMP/mirror.log"; exit 1; }
           cat "$RUNNER_TEMP/mirror.log"
           test -x "$home/.local/bin/uv"
@@ -129,7 +129,6 @@ jobs:
           $env:Path = ($env:Path -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'uv.exe')) }) -join ';'
           if (Get-Command uv -ErrorAction SilentlyContinue) { throw 'uv is still on PATH' }
           $env:PAPER_TRANSLATOR_MIRROR = 'cn'
-          $env:PAPER_TRANSLATOR_REF = $env:GITHUB_SHA
           $log = & .\install.ps1 --help 2>&1 | Out-String
           $log
           if (-not (Test-Path (Join-Path $env:USERPROFILE '.local\bin\uv.exe'))) { throw 'uv was not installed from the mirror' }

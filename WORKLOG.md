@@ -16,3 +16,9 @@
 - Regression coverage checks that MiMo and DeepSeek requests carry the disabled-thinking flag and cache parameter, while unrelated models receive no provider-specific switch. Existing completeness, fallback, and advisory-delivery behavior is preserved.
 - Validation: `python3 -m unittest discover -s backend/scripts -p test_translation_completion.py`; `git diff --check`. Reviewed the request path and cache integration. No project entry points or long-term rules changed.
 - This addresses default reasoning overhead; it does not prevent provider-side overload or address rotated-table PDF layout.
+
+## 2026-11-04 — Repair PR installer CI revision selection
+
+- Investigated the failing macOS pull-request run: the mirror installer passed GitHub's temporary merge SHA to uv, which could not resolve that revision from the repository. The push run for the same patch passed all platforms; translation tests were not the failing step.
+- Centralized `PAPER_TRANSLATOR_REF` in the CI job environment: PR runs use the published head SHA, and push runs use `github.sha`. Standard and mirror installers now share that selection on shell and PowerShell paths; the clean shell environment explicitly forwards it.
+- Validation: workflow diff review, actionlint, and the new GitHub Actions run. Application translation behavior is unchanged by this follow-up.
