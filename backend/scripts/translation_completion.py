@@ -8,9 +8,9 @@ from contextlib import contextmanager
 
 LOG = logging.getLogger(__name__)
 COMPLETION_CACHE_VERSION = "complete-v1"
-# MiMo v2.6 models reason by default. Runaway reasoning can use the whole output
-# budget on every retry, and translation does not need it.
-THINKING_DISABLED_MODEL_PREFIXES = ("mimo-",)
+# These providers enable reasoning by default. Translation needs the output
+# budget for complete text, and both accept the explicit thinking switch.
+THINKING_DISABLED_MODEL_PREFIXES = ("mimo-", "deepseek-flash")
 
 
 def disable_thinking(translator):
