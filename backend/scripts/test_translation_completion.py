@@ -121,12 +121,17 @@ class TranslationCompletionTest(unittest.TestCase):
             outcomes.record_failure(RuntimeError("late"))
         self.assertEqual({"2": 1}, outcomes.summary()["failedPages"])
 
-    def test_disables_thinking_only_for_mimo_models(self):
-        mimo = translator()
-        mimo.model, mimo.extra_body = "mimo-v2.6-pro", {}
-        disable_thinking(mimo)
-        self.assertEqual({"thinking": {"type": "disabled"}}, mimo.extra_body)
-        mimo.add_cache_impact_parameters.assert_called_once_with("thinking", "disabled")
+    def test_disables_thinking_for_supported_translation_models(self):
+        for model in ("mimo-v2.6-pro", "deepseek-flash"):
+            with self.subTest(model=model):
+                engine = translator(response("完整译文"))
+                engine.model, engine.extra_body = model, {}
+                disable_thinking(engine)
+                self.assertEqual({"thinking": {"type": "disabled"}}, engine.extra_body)
+                engine.add_cache_impact_parameters.assert_called_once_with("thinking", "disabled")
+                complete_translation(engine, "source")
+                self.assertEqual({"thinking": {"type": "disabled"}},
+                                 engine.client.chat.completions.create.call_args.kwargs["extra_body"])
         other = translator()
         other.model, other.extra_body = "gpt-4o-mini", {}
         disable_thinking(other)
